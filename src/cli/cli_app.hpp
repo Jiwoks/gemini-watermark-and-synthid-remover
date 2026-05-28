@@ -11,6 +11,8 @@ struct CliOptions {
     bool force_small = false;
     bool force_large = false;
     bool verbose = false;
+    bool detect_only = false;
+    float inpaint_strength = 0.85f;
 };
 
 int run_cli(int argc, char* argv[]);

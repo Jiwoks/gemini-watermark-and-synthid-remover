@@ -30,10 +30,14 @@ int run_cli(int argc, char* argv[]) {
 
     app.add_option("-o,--output", opts.output_path, "Output file (default: overwrite in-place)");
 
-    app.add_flag("-f,--force", opts.force, "Process unconditionally (skip detection)");
+    app.add_flag("-f,--force", opts.force, "Skip detection, force-remove at default position");
     app.add_flag("--force-small", opts.force_small, "Force 48x48 watermark");
     app.add_flag("--force-large", opts.force_large, "Force 96x96 watermark");
     app.add_flag("-v,--verbose", opts.verbose, "Verbose output");
+    app.add_flag("--detect-only", opts.detect_only, "Report detection result without modifying");
+    app.add_option("--inpaint-strength", opts.inpaint_strength,
+                   "Inpaint strength 0.0-1.0 (default: 0.85)")
+        ->check(CLI::Range(0.0f, 1.0f));
 
     try {
         app.parse(argc, argv);
@@ -71,8 +75,45 @@ int run_cli(int argc, char* argv[]) {
             force_size = WatermarkSize::Large;
         }
 
-        engine.remove_watermark(image, force_size);
+        // --- Detect-only mode ---
+        if (opts.detect_only) {
+            auto result = engine.detect_watermark(image, force_size);
+            if (result.detected) {
+                spdlog::info("Watermark DETECTED (confidence: {:.1f}%)",
+                             result.confidence * 100.0f);
+                spdlog::info("  Region: ({}, {}) {}x{}",
+                             result.region.x, result.region.y,
+                             result.region.width, result.region.height);
+                spdlog::info("  Scores: spatial={:.3f} grad={:.3f} var={:.3f}",
+                             result.spatial_score, result.gradient_score,
+                             result.variance_score);
+            } else {
+                spdlog::info("No watermark detected (confidence: {:.1f}%)",
+                             result.confidence * 100.0f);
+            }
+            return result.detected ? 0 : 2;
+        }
 
+        // --- Normal processing: detect → remove → inpaint ---
+        if (!opts.force) {
+            auto detection = engine.detect_watermark(image, force_size);
+
+            if (detection.detected) {
+                spdlog::info("Watermark detected ({:.1f}% confidence), removing...",
+                             detection.confidence * 100.0f);
+                engine.remove_watermark_detected(image, detection);
+            } else {
+                spdlog::warn("No watermark detected ({:.1f}% confidence). "
+                             "Use --force to remove anyway.",
+                             detection.confidence * 100.0f);
+                return 2;
+            }
+        } else {
+            spdlog::info("Force mode: removing watermark at default position");
+            engine.remove_watermark(image, force_size);
+        }
+
+        // Save output
         std::string output = opts.output_path.empty() ? opts.input_path : opts.output_path;
         std::filesystem::path out_path(output);
         if (!out_path.parent_path().empty() && !std::filesystem::exists(out_path.parent_path())) {
