@@ -1,5 +1,7 @@
 #include "core/watermark_engine.hpp"
 #include "core/blend_modes.hpp"
+#include "core/inpaint.hpp"
+#include "detection/ncc_detector.hpp"
 
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
@@ -10,7 +12,10 @@ namespace wmr {
 
 WatermarkEngine::WatermarkEngine() {
     init_alpha_maps();
+    detector_ = std::make_unique<NccDetector>(alpha_map_small_, alpha_map_large_);
 }
+
+WatermarkEngine::~WatermarkEngine() = default;
 
 void WatermarkEngine::init_alpha_maps() {
     std::vector<unsigned char> buf_small(
@@ -43,6 +48,13 @@ void WatermarkEngine::init_alpha_maps() {
                   alpha_map_large_.cols, alpha_map_large_.rows);
 }
 
+DetectionResult WatermarkEngine::detect_watermark(
+    const cv::Mat& image,
+    std::optional<WatermarkSize> force_size) const
+{
+    return detector_->detect(image, force_size);
+}
+
 void WatermarkEngine::remove_watermark(cv::Mat& image,
                                         std::optional<WatermarkSize> force_size) {
     if (image.empty()) {
@@ -59,7 +71,6 @@ void WatermarkEngine::remove_watermark(cv::Mat& image,
         get_watermark_size(image.cols, image.rows));
 
     auto config = get_watermark_config(image.cols, image.rows);
-    // Override config if forcing a specific size
     if (force_size.has_value()) {
         if (*force_size == WatermarkSize::Small) {
             config = {32, 32, 48};
@@ -75,6 +86,42 @@ void WatermarkEngine::remove_watermark(cv::Mat& image,
                   pos.x, pos.y, size == WatermarkSize::Small ? "48x48" : "96x96");
 
     remove_watermark_alpha_blend(image, alpha_map, pos, logo_value_);
+}
+
+void WatermarkEngine::remove_watermark_detected(
+    cv::Mat& image,
+    const DetectionResult& detection)
+{
+    if (image.empty()) return;
+
+    if (image.channels() == 4) {
+        cv::cvtColor(image, image, cv::COLOR_BGRA2BGR);
+    } else if (image.channels() == 1) {
+        cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
+    }
+
+    const cv::Mat& alpha_map = get_alpha_map(detection.size);
+    cv::Point pos(detection.region.x, detection.region.y);
+
+    spdlog::debug("Removing detected watermark at ({}, {}) conf={:.2f}",
+                  pos.x, pos.y, detection.confidence);
+
+    remove_watermark_alpha_blend(image, alpha_map, pos, logo_value_);
+
+    // Inpaint residuals
+    inpaint_residual(image, detection.region);
+}
+
+void WatermarkEngine::inpaint_residual(
+    cv::Mat& image,
+    const cv::Rect& region,
+    const InpaintConfig& config) const
+{
+    const cv::Mat& alpha_map = get_alpha_map(
+        (region.width <= 48 && region.height <= 48)
+            ? WatermarkSize::Small : WatermarkSize::Large);
+
+    wmr::inpaint_residual(image, region, alpha_map, config);
 }
 
 void WatermarkEngine::add_watermark(cv::Mat& image,
