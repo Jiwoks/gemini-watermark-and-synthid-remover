@@ -72,3 +72,10 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
         target_compile_options(${PROJECT_NAME} PRIVATE /O2)
     endif()
 endif()
+
+# Tests
+option(WMR_BUILD_TESTS "Build test suite" ON)
+if(WMR_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
+endif()

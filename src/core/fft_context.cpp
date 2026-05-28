@@ -37,9 +37,12 @@ cv::Mat FftContext::forward(const cv::Mat& channel) {
     if (it != plans_.end()) {
         plan = reinterpret_cast<fftwf_plan>(it->second);
     } else {
+        // Use dummy arrays for plan creation — FFTW_MEASURE overwrites them
+        cv::Mat dummy_in(rows, cols, CV_32FC2, cv::Scalar(0));
+        cv::Mat dummy_out(rows, cols, CV_32FC2);
         plan = fftwf_plan_dft_2d(rows, cols,
-                                  reinterpret_cast<fftwf_complex*>(complex_in.ptr<float>()),
-                                  reinterpret_cast<fftwf_complex*>(output.ptr<float>()),
+                                  reinterpret_cast<fftwf_complex*>(dummy_in.ptr<float>()),
+                                  reinterpret_cast<fftwf_complex*>(dummy_out.ptr<float>()),
                                   FFTW_FORWARD, FFTW_MEASURE);
         if (!plan) {
             throw std::runtime_error("FFTW forward plan creation failed");
@@ -70,9 +73,12 @@ cv::Mat FftContext::inverse(const cv::Mat& complex) {
     if (it != plans_.end()) {
         plan = reinterpret_cast<fftwf_plan>(it->second);
     } else {
+        // Use dummy arrays for plan creation — FFTW_MEASURE overwrites them
+        cv::Mat dummy_in(rows, cols, CV_32FC2, cv::Scalar(0));
+        cv::Mat dummy_out(rows, cols, CV_32FC2);
         plan = fftwf_plan_dft_2d(rows, cols,
-                                  reinterpret_cast<fftwf_complex*>(output.ptr<float>()),
-                                  reinterpret_cast<fftwf_complex*>(output.ptr<float>()),
+                                  reinterpret_cast<fftwf_complex*>(dummy_in.ptr<float>()),
+                                  reinterpret_cast<fftwf_complex*>(dummy_out.ptr<float>()),
                                   FFTW_BACKWARD, FFTW_MEASURE);
         if (!plan) {
             throw std::runtime_error("FFTW inverse plan creation failed");

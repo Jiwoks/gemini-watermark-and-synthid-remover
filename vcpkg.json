@@ -6,6 +6,7 @@
     "fmt",
     "cli11",
     "spdlog",
-    "fftw3"
+    "fftw3",
+    "catch2"
   ]
 }
