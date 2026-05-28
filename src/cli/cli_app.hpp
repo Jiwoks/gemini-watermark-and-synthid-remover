@@ -13,6 +13,9 @@ struct CliOptions {
     bool verbose = false;
     bool detect_only = false;
     float inpaint_strength = 0.85f;
+    bool synthid = false;
+    std::string codebook_path;
+    float synthid_strength = 1.0f;
 };
 
 int run_cli(int argc, char* argv[]);

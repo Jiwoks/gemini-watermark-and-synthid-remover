@@ -121,10 +121,17 @@ void CodebookSubtractor::remove_synthid(
 
             cv::Mat img_fft = fft_.forward(channels[ch]);
 
+            SpectralProfile ch_profile;
+            ch_profile.width = w;
+            ch_profile.height = h;
+            ch_profile.magnitude_bgr[0] = prof_mag;
+            ch_profile.phase_bgr[0] = prof_phase;
+            ch_profile.consistency_bgr[0] = prof_cons;
+
             cv::Mat wm_estimate = estimate_watermark_fft(
                 img_fft, ch, params.removal, params.cons_floor,
                 params.mag_cap, params.dc_radius,
-                SpectralProfile{w, h, {prof_mag, prof_phase, prof_cons}}, luminance);
+                ch_profile, luminance);
 
             cv::Mat cleaned_fft;
             cv::subtract(img_fft, wm_estimate, cleaned_fft);
@@ -154,7 +161,7 @@ cv::Mat CodebookSubtractor::estimate_watermark_fft(
     float mag_cap,
     float dc_radius,
     const SpectralProfile& profile,
-    float image_luminance)
+    float /*image_luminance*/)
 {
     const int rows = image_fft.rows;
     const int cols = image_fft.cols;

@@ -1,6 +1,9 @@
 #include "cli/cli_app.hpp"
 #include "core/watermark_engine.hpp"
 #include "core/types.hpp"
+#include "core/fft_context.hpp"
+#include "synthid/spectral_codebook.hpp"
+#include "synthid/codebook_subtractor.hpp"
 
 #include <opencv2/imgcodecs.hpp>
 #include <CLI/CLI.hpp>
@@ -19,7 +22,7 @@
 namespace wmr {
 
 int run_cli(int argc, char* argv[]) {
-    CLI::App app{"Watermark Remover — remove Gemini visible watermarks", APP_NAME};
+    CLI::App app{"Watermark Remover — remove Gemini visible and SynthID invisible watermarks", APP_NAME};
     app.set_version_flag("-V,--version", APP_VERSION);
 
     CliOptions opts;
@@ -39,6 +42,12 @@ int run_cli(int argc, char* argv[]) {
                    "Inpaint strength 0.0-1.0 (default: 0.85)")
         ->check(CLI::Range(0.0f, 1.0f));
 
+    app.add_flag("--synthid", opts.synthid, "Remove SynthID invisible watermark via spectral subtraction");
+    app.add_option("--codebook", opts.codebook_path, "Path to spectral codebook file (.wcb)");
+    app.add_option("--synthid-strength", opts.synthid_strength,
+                   "SynthID removal strength 0.0-2.0 (default: 1.0)")
+        ->check(CLI::Range(0.0f, 2.0f));
+
     try {
         app.parse(argc, argv);
     } catch (const CLI::ParseError& e) {
@@ -56,28 +65,25 @@ int run_cli(int argc, char* argv[]) {
         return 1;
     }
 
-    try {
-        WatermarkEngine engine;
+    if (opts.synthid && opts.codebook_path.empty()) {
+        spdlog::error("--synthid requires --codebook <path> to a spectral codebook file");
+        return 1;
+    }
 
-        spdlog::info("Loading: {}", opts.input_path);
+    try {
         cv::Mat image = cv::imread(opts.input_path, cv::IMREAD_COLOR);
         if (image.empty()) {
             spdlog::error("Failed to load image: {}", opts.input_path);
             return 1;
         }
 
+        spdlog::info("Loading: {}", opts.input_path);
         spdlog::info("Image: {}x{}", image.cols, image.rows);
-
-        std::optional<WatermarkSize> force_size;
-        if (opts.force_small) {
-            force_size = WatermarkSize::Small;
-        } else if (opts.force_large) {
-            force_size = WatermarkSize::Large;
-        }
 
         // --- Detect-only mode ---
         if (opts.detect_only) {
-            auto result = engine.detect_watermark(image, force_size);
+            WatermarkEngine engine;
+            auto result = engine.detect_watermark(image);
             if (result.detected) {
                 spdlog::info("Watermark DETECTED (confidence: {:.1f}%)",
                              result.confidence * 100.0f);
@@ -94,7 +100,15 @@ int run_cli(int argc, char* argv[]) {
             return result.detected ? 0 : 2;
         }
 
-        // --- Normal processing: detect → remove → inpaint ---
+        // --- Phase 1: Visible watermark removal ---
+        WatermarkEngine engine;
+        std::optional<WatermarkSize> force_size;
+        if (opts.force_small) {
+            force_size = WatermarkSize::Small;
+        } else if (opts.force_large) {
+            force_size = WatermarkSize::Large;
+        }
+
         if (!opts.force) {
             auto detection = engine.detect_watermark(image, force_size);
 
@@ -106,14 +120,33 @@ int run_cli(int argc, char* argv[]) {
                 spdlog::warn("No watermark detected ({:.1f}% confidence). "
                              "Use --force to remove anyway.",
                              detection.confidence * 100.0f);
-                return 2;
+                // Continue to SynthID removal even if no visible watermark found
+                if (!opts.synthid) {
+                    return 2;
+                }
             }
         } else {
             spdlog::info("Force mode: removing watermark at default position");
             engine.remove_watermark(image, force_size);
         }
 
-        // Save output
+        // --- Phase 2: SynthID invisible watermark removal ---
+        if (opts.synthid) {
+            spdlog::info("Removing SynthID watermark via spectral subtraction...");
+
+            FftContext fft;
+            SpectralCodebook codebook;
+            codebook.load(opts.codebook_path);
+
+            CodebookSubtractor subtractor(fft);
+            RemovalConfig config;
+            config.custom_strength = opts.synthid_strength;
+
+            subtractor.remove_synthid(image, codebook, config);
+            spdlog::info("SynthID removal complete");
+        }
+
+        // --- Save output ---
         std::string output = opts.output_path.empty() ? opts.input_path : opts.output_path;
         std::filesystem::path out_path(output);
         if (!out_path.parent_path().empty() && !std::filesystem::exists(out_path.parent_path())) {
