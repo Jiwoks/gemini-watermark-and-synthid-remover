@@ -6,6 +6,55 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Phase 5: Unified CLI + Test Suite — COMPLETE
+
+#### Added
+- CLI restructured with CLI11 subcommands: `remove`, `detect`, `visible`, `synthid`, `build-codebook`
+- Batch processing module (`src/cli/batch_processor.hpp/cpp`) — directory scanning with optional `--recursive`, parallel-safe
+- `BatchResult` struct tracking total/succeeded/failed/skipped counts
+- Catch2 v3 test suite with 17 tests, 54 assertions (all passing):
+  - Unit tests: blend_modes (3), fft_context (4), spectral_codebook (4), inpaint (3)
+  - Integration tests: visible_pipeline (3, 2 SKIP in build dir, pass from project root)
+- Tests linked via `tests/CMakeLists.txt` with `catch_discover_tests()` and CTest integration
+- Build option `WMR_BUILD_TESTS` (default ON) to toggle test building
+
+### Phase 4: SynthID Detection + Codebook Builder — COMPLETE
+
+#### Added
+- `SynthidDetector` class (`src/detection/synthid_detector.hpp/cpp`) — 4-method Bayesian detection:
+  - Noise correlation via bilateral filter denoise + NCC of noise spectrum vs profile
+  - Carrier phase matching via element-wise cosine of phase differences
+  - Structure ratio: energy at carrier bins vs total
+  - Multi-scale consistency: phase coherence at 1x, 0.5x, 0.25x scales
+  - Weighted fusion: noise_corr×0.35 + carrier_phase×0.35 + structure×0.15 + multi_scale×0.15
+  - Configurable threshold (default 0.50)
+- `CodebookBuilder` class (`src/synthid/codebook_builder.hpp/cpp`) — build spectral codebooks from reference images:
+  - Per-channel FFT magnitude/phase accumulation
+  - Automatic resolution bucketing
+  - Consistency computation (std dev across samples)
+  - Quality gate: warns on <3 samples per resolution
+
+### Phase 3: SynthID Spectral Infrastructure — COMPLETE
+
+#### Added
+- `FftContext` class (`src/core/fft_context.hpp/cpp`) — FFTW3 wrapper with plan caching:
+  - Forward/inverse 2D FFT with CV_32FC1/CV_32FC2 interop
+  - Magnitude, phase, and polar reconstruction utilities
+  - Plan caching keyed on (rows, cols, direction) with dummy arrays for FFTW_MEASURE safety
+- `SpectralProfile` struct in `src/core/types.hpp` — per-resolution FFT data (magnitude, phase, consistency per BGR channel)
+- `SpectralCodebook` class (`src/synthid/spectral_codebook.hpp/cpp`) — JSON-based codebook persistence:
+  - Save/load with nearest-resolution fallback
+  - `--codebook` CLI flag for specifying codebook path
+- `CodebookSubtractor` class (`src/synthid/codebook_subtractor.hpp/cpp`) — multi-pass spectral subtraction:
+  - Aggressive→moderate→gentle removal schedule
+  - `--synthid-strength` CLI flag (0.0–2.0, default 1.0)
+- `fftw3f` linked via vcpkg, FFTW3::fftw3f CMake target
+
+#### Fixed
+- SpectralProfile aggregate init bug: explicit field assignment prevents misaligned brace initialization
+- FFTW_MEASURE input corruption: dummy arrays prevent plan creation from overwriting real data
+- OpenCV `cv::cos` (nonexistent) replaced with element-wise `std::cos` loop in carrier phase matching
+
 ### Phase 2: Visible Watermark Detection + Inpainting — COMPLETE
 
 #### Added
