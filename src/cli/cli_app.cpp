@@ -5,6 +5,7 @@
 #include "core/fft_context.hpp"
 #include "synthid/spectral_codebook.hpp"
 #include "synthid/codebook_subtractor.hpp"
+#include "synthid/noise_residual_subtractor.hpp"
 #include "synthid/codebook_builder.hpp"
 #include "detection/synthid_detector.hpp"
 
@@ -120,35 +121,43 @@ static int process_single_image(const CliOptions& opts) {
     // SynthID watermark removal
     if (opts.mode == CliMode::SynthidOnly ||
         (opts.mode == CliMode::AutoRemove && opts.synthid)) {
-        if (opts.codebook_path.empty()) {
-            spdlog::error("SynthID removal requires --codebook <path>");
+        if (opts.codebook_path.empty() && !opts.codebook_free) {
+            spdlog::error("SynthID removal requires --codebook <path> or --codebook-free");
             return 1;
         }
 
         FftContext fft;
-        SpectralCodebook codebook;
-        codebook.load(opts.codebook_path);
-
-        // Detect first (unless forced)
-        if (!opts.force) {
-            SynthidDetector detector(fft);
-            auto det = detector.detect(image, codebook);
-            if (!det.detected) {
-                spdlog::debug("No SynthID detected ({:.1f}%)", det.confidence * 100.0f);
-                if (opts.mode == CliMode::SynthidOnly) {
-                    spdlog::warn("No SynthID detected. Use --force to remove anyway.");
-                    return 2;
-                }
-            } else {
-                spdlog::info("SynthID detected ({:.1f}%), removing...",
-                             det.confidence * 100.0f);
-            }
-        }
-
-        CodebookSubtractor subtractor(fft);
         RemovalConfig config;
         config.custom_strength = opts.synthid_strength;
-        subtractor.remove_synthid(image, codebook, config);
+        config.phase_adaptive = opts.phase_adaptive;
+
+        if (!opts.codebook_path.empty()) {
+            SpectralCodebook codebook;
+            codebook.load(opts.codebook_path);
+
+            if (!opts.force) {
+                SynthidDetector detector(fft);
+                auto det = detector.detect(image, codebook);
+                if (!det.detected) {
+                    spdlog::debug("No SynthID detected ({:.1f}%)", det.confidence * 100.0f);
+                    if (opts.mode == CliMode::SynthidOnly) {
+                        spdlog::warn("No SynthID detected. Use --force to remove anyway.");
+                        return 2;
+                    }
+                } else {
+                    spdlog::info("SynthID detected ({:.1f}%), removing...",
+                                 det.confidence * 100.0f);
+                }
+            }
+
+            CodebookSubtractor subtractor(fft);
+            subtractor.remove_synthid(image, codebook, config);
+        } else {
+            spdlog::info("Using codebook-free removal (noise residual estimation)");
+            NoiseResidualSubtractor subtractor(fft);
+            subtractor.remove_synthid(image, config);
+        }
+
         spdlog::info("SynthID removal complete");
         did_work = true;
     }
@@ -257,8 +266,11 @@ int run_cli(int argc, char* argv[]) {
         ->required()
         ->check(CLI::ExistingFile);
     synthid_cmd->add_flag("-f,--force", opts.force, "Skip detection");
-    synthid_cmd->add_option("--codebook", opts.codebook_path, "Spectral codebook path (.wcb)")
-        ->required();
+    synthid_cmd->add_option("--codebook", opts.codebook_path, "Spectral codebook path (.wcb)");
+    synthid_cmd->add_flag("--codebook-free", opts.codebook_free,
+                          "Estimate carrier from noise residual (no codebook needed)");
+    synthid_cmd->add_flag("--phase-adaptive", opts.phase_adaptive,
+                          "Use image's own phase for uniform images (conjugate subtraction)");
     synthid_cmd->add_option("--synthid-strength", opts.synthid_strength,
                             "SynthID removal strength 0.0-2.0")
         ->check(CLI::Range(0.0f, 2.0f));

@@ -26,6 +26,8 @@ struct CliOptions {
     std::string codebook_path;
     float synthid_strength = 1.0f;
     bool recursive = false;
+    bool codebook_free = false;
+    bool phase_adaptive = false;
 };
 
 int run_cli(int argc, char* argv[]);

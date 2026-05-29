@@ -18,6 +18,7 @@ enum class RemovalStrength {
 struct RemovalConfig {
     RemovalStrength strength = RemovalStrength::Moderate;
     float custom_strength = -1.0f;  // Override: 0.0-1.0 if >= 0
+    bool phase_adaptive = false;    // Use image's own phase for uniform images
 };
 
 class CodebookSubtractor {
@@ -31,7 +32,7 @@ public:
 private:
     FftContext& fft_;
 
-    static constexpr float kChannelWeights[3] = {0.85f, 1.0f, 0.70f};  // R, G, B
+    static constexpr float kChannelWeights[3] = {0.85f, 1.0f, 0.70f};  // B, G, R (OpenCV order)
 
     struct StrengthParams {
         float removal;
@@ -50,6 +51,14 @@ private:
         float dc_radius,
         const SpectralProfile& profile,
         float image_luminance);
+    cv::Mat compute_subtract_magnitude(
+        const cv::Mat& image_fft,
+        int channel,
+        float removal_factor,
+        float cons_floor,
+        float mag_cap,
+        float dc_radius,
+        const SpectralProfile& profile);
 };
 
 } // namespace wmr

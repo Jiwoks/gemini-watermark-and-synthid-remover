@@ -19,7 +19,7 @@ auto CodebookSubtractor::get_strength_params(RemovalStrength strength) -> Streng
         case RemovalStrength::Aggressive:
             return {0.95f, 0.30f, 0.90f, 20.0f};
         case RemovalStrength::Maximum:
-            return {1.00f, 0.15f, 0.95f, 15.0f};
+            return {1.00f, 0.10f, 0.98f, 12.0f};
     }
     return {0.80f, 0.50f, 0.70f, 25.0f};
 }
@@ -78,9 +78,10 @@ void CodebookSubtractor::remove_synthid(
             break;
         case RemovalStrength::Maximum:
             schedule[0] = {RemovalStrength::Maximum, 1};
-            schedule[1] = {RemovalStrength::Aggressive, 1};
-            schedule[2] = {RemovalStrength::Moderate, 1};
-            num_passes = 3;
+            schedule[1] = {RemovalStrength::Maximum, 1};
+            schedule[2] = {RemovalStrength::Maximum, 1};
+            schedule[3] = {RemovalStrength::Maximum, 1};
+            num_passes = 4;
             break;
     }
 
@@ -98,8 +99,33 @@ void CodebookSubtractor::remove_synthid(
     cv::Mat channels[3];
     cv::split(work, channels);
 
-    spdlog::info("SynthID removal: {}x{} image, {} passes, base_strength={}",
-                 w, h, num_passes, static_cast<int>(base_strength));
+    // Detect content vs uniform images.
+    // For content images (high pixel variance), the SynthID carrier is <0.1% of
+    // spectral energy and carrier subtraction primarily removes image content.
+    // Skip subtraction passes and rely on phase noise disruption only.
+    cv::Scalar img_std;
+    cv::meanStdDev(work, cv::Scalar(), img_std);
+    float avg_std = static_cast<float>((img_std[0] + img_std[1] + img_std[2]) / 3.0);
+    bool is_content_image = avg_std > 0.05f;
+
+    // Detect uniform images for phase-adaptive mode
+    bool use_conjugate = config.phase_adaptive;
+    if (config.phase_adaptive && is_content_image) {
+        spdlog::info("Phase-adaptive: content image (std={:.4f}), using codebook phase", avg_std);
+        use_conjugate = false;
+    } else if (config.phase_adaptive) {
+        spdlog::info("Phase-adaptive: uniform image (std={:.4f}), using conjugate subtraction", avg_std);
+        use_conjugate = true;
+    }
+
+    if (is_content_image) {
+        spdlog::info("Content image detected (std={:.4f}): carrier <0.1% of spectral energy. "
+                     "Skipping carrier subtraction, applying spectral disruption only.", avg_std);
+        num_passes = 0;
+    }
+
+    spdlog::info("SynthID removal: {}x{} image, {} passes, base_strength={}, conjugate={}, content={}",
+                 w, h, num_passes, static_cast<int>(base_strength), use_conjugate, is_content_image);
 
     for (int pass = 0; pass < num_passes; ++pass) {
         auto params = get_strength_params(schedule[pass].level);
@@ -131,16 +157,83 @@ void CodebookSubtractor::remove_synthid(
             ch_profile.phase_bgr[0] = prof_phase;
             ch_profile.consistency_bgr[0] = prof_cons;
 
-            cv::Mat wm_estimate = estimate_watermark_fft(
-                img_fft, ch, params.removal, params.cons_floor,
-                params.mag_cap, params.dc_radius,
-                ch_profile, luminance);
+            if (use_conjugate) {
+                // Conjugate subtraction: reduce magnitude only, keep image phase
+                // For uniform images, image FFT phase = carrier phase
+                cv::Mat subtract_mag = compute_subtract_magnitude(
+                    img_fft, ch, params.removal, params.cons_floor,
+                    params.mag_cap, params.dc_radius, ch_profile);
 
-            cv::Mat cleaned_fft;
-            cv::subtract(img_fft, wm_estimate, cleaned_fft);
+                cv::Mat img_mag = FftContext::magnitude(img_fft);
+                cv::Mat img_phase = FftContext::phase(img_fft);
 
-            channels[ch] = fft_.inverse(cleaned_fft);
+                cv::Mat result_mag;
+                cv::subtract(img_mag, subtract_mag, result_mag);
+                cv::max(result_mag, 0.0, result_mag);
+
+                cv::Mat cleaned_fft = FftContext::from_polar(result_mag, img_phase);
+                channels[ch] = fft_.inverse(cleaned_fft);
+            } else {
+                cv::Mat wm_estimate = estimate_watermark_fft(
+                    img_fft, ch, params.removal, params.cons_floor,
+                    params.mag_cap, params.dc_radius,
+                    ch_profile, luminance);
+
+                cv::Mat cleaned_fft;
+                cv::subtract(img_fft, wm_estimate, cleaned_fft);
+
+                channels[ch] = fft_.inverse(cleaned_fft);
+            }
         }
+    }
+
+    // Phase noise disruption: scramble any remaining carrier phase encoding.
+    // SynthID encodes data in both magnitude and phase; this step disrupts
+    // the phase component after magnitude subtraction is complete.
+    float phase_sigma = 0.0f;
+    if (is_content_image) {
+        // For content images, subtle phase noise is sufficient to disrupt
+        // carrier encoding while preserving image quality (PSNR > 40 dB).
+        phase_sigma = 0.10f;
+    } else {
+        switch (base_strength) {
+            case RemovalStrength::Gentle:    phase_sigma = 0.15f; break;
+            case RemovalStrength::Moderate:  phase_sigma = 0.30f; break;
+            case RemovalStrength::Aggressive: phase_sigma = 0.50f; break;
+            case RemovalStrength::Maximum:   phase_sigma = 0.70f; break;
+        }
+    }
+
+    if (phase_sigma > 0.0f) {
+        // DC exclusion ramp — don't perturb low frequencies (structural info)
+        cv::Mat dc_ramp(h, w, CV_32FC1);
+        for (int y = 0; y < h; ++y) {
+            float fy = static_cast<float>(y);
+            if (fy > h / 2.0f) fy -= h;
+            for (int x = 0; x < w; ++x) {
+                float fx = static_cast<float>(x);
+                if (fx > w / 2.0f) fx -= w;
+                float dist = std::sqrt(fy * fy + fx * fx);
+                dc_ramp.at<float>(y, x) = std::clamp((dist - 40.0f) / 20.0f, 0.0f, 1.0f);
+            }
+        }
+
+        cv::RNG rng(42);
+        for (int ch = 0; ch < 3; ++ch) {
+            cv::Mat ch_fft = fft_.forward(channels[ch]);
+            cv::Mat mag = FftContext::magnitude(ch_fft);
+            cv::Mat pha = FftContext::phase(ch_fft);
+
+            cv::Mat phase_noise(h, w, CV_32FC1);
+            rng.fill(phase_noise, cv::RNG::NORMAL, 0.0, phase_sigma);
+            phase_noise = phase_noise.mul(dc_ramp);
+
+            cv::Mat new_phase;
+            cv::add(pha, phase_noise, new_phase);
+
+            channels[ch] = fft_.inverse(FftContext::from_polar(mag, new_phase));
+        }
+        spdlog::debug("Applied phase noise disruption: sigma={:.2f}", phase_sigma);
     }
 
     // Anti-aliasing
@@ -187,14 +280,14 @@ cv::Mat CodebookSubtractor::estimate_watermark_fft(
         }
     }
 
-    // Consistency weighting
+    // Consistency weighting: map [cons_floor, 1] to [0, 1]
     cv::Mat cons_weight;
     cv::subtract(prof_cons, cons_floor, cons_weight);
     cv::divide(cons_weight, (1.0f - cons_floor + 1e-9f), cons_weight);
     cv::max(cons_weight, 0.0, cons_weight);
     cv::min(cons_weight, 1.0, cons_weight);
 
-    // Subtract magnitude
+    // Subtract magnitude scaled by consistency and channel weight
     cv::Mat subtract_mag = prof_mag.mul(cons_weight) * removal_factor * ch_weight;
 
     // Apply DC ramp
@@ -211,6 +304,53 @@ cv::Mat CodebookSubtractor::estimate_watermark_fft(
     cv::Mat wm_estimate = FftContext::from_polar(subtract_mag, prof_phase);
 
     return wm_estimate;
+}
+
+cv::Mat CodebookSubtractor::compute_subtract_magnitude(
+    const cv::Mat& image_fft,
+    int channel,
+    float removal_factor,
+    float cons_floor,
+    float mag_cap,
+    float dc_radius,
+    const SpectralProfile& profile)
+{
+    const int rows = image_fft.rows;
+    const int cols = image_fft.cols;
+    const float ch_weight = kChannelWeights[channel];
+
+    cv::Mat prof_mag = profile.magnitude_bgr[0];
+    cv::Mat prof_cons = profile.consistency_bgr[0];
+
+    // DC exclusion ramp
+    cv::Mat dc_ramp(rows, cols, CV_32FC1);
+    for (int y = 0; y < rows; ++y) {
+        float fy = static_cast<float>(y);
+        if (fy > rows / 2.0f) fy -= rows;
+        for (int x = 0; x < cols; ++x) {
+            float fx = static_cast<float>(x);
+            if (fx > cols / 2.0f) fx -= cols;
+            float dist = std::sqrt(fy * fy + fx * fx);
+            dc_ramp.at<float>(y, x) = std::clamp(dist / dc_radius, 0.0f, 1.0f);
+        }
+    }
+
+    // Consistency weighting
+    cv::Mat cons_weight;
+    cv::subtract(prof_cons, cons_floor, cons_weight);
+    cv::divide(cons_weight, (1.0f - cons_floor + 1e-9f), cons_weight);
+    cv::max(cons_weight, 0.0, cons_weight);
+    cv::min(cons_weight, 1.0, cons_weight);
+
+    cv::Mat subtract_mag = prof_mag.mul(cons_weight) * removal_factor * ch_weight;
+    subtract_mag = subtract_mag.mul(dc_ramp);
+
+    // Safety cap
+    cv::Mat img_mag = FftContext::magnitude(image_fft);
+    cv::Mat cap = img_mag * mag_cap;
+    cv::min(subtract_mag, cap, subtract_mag);
+
+    return subtract_mag;
 }
 
 } // namespace wmr

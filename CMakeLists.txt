@@ -15,6 +15,7 @@ set(SOURCES
     src/detection/synthid_detector.cpp
     src/synthid/spectral_codebook.cpp
     src/synthid/codebook_subtractor.cpp
+    src/synthid/noise_residual_subtractor.cpp
     src/synthid/codebook_builder.cpp
     src/cli/cli_app.cpp
     src/cli/batch_processor.cpp

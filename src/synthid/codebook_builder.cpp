@@ -133,11 +133,21 @@ SpectralProfile CodebookBuilder::finalize(const ProfileAccumulator& acc) const {
         // Average phase
         profile.phase_bgr[ch] = acc.phase_sum[ch] / n;
 
-        // Consistency: standard deviation of magnitude
-        // std = sqrt(E[X^2] - (E[X])^2)
+        // Consistency: inverse of normalized magnitude variability.
+        // Carrier bins have LOW std_dev (stable across images) → HIGH consistency.
+        // Content bins have HIGH std_dev (variable) → LOW consistency.
         cv::Mat mean_sq = profile.magnitude_bgr[ch].mul(profile.magnitude_bgr[ch]);
         cv::Mat variance = acc.mag_sq_sum[ch] / n - mean_sq;
-        cv::sqrt(cv::max(variance, 0.0), profile.consistency_bgr[ch]);
+        cv::Mat std_dev;
+        cv::sqrt(cv::max(variance, 0.0), std_dev);
+
+        double max_std;
+        cv::minMaxLoc(std_dev, nullptr, &max_std);
+        if (max_std > 1e-9f) {
+            profile.consistency_bgr[ch] = 1.0f - (std_dev / static_cast<float>(max_std));
+        } else {
+            profile.consistency_bgr[ch] = cv::Mat::ones(std_dev.size(), CV_32FC1);
+        }
     }
 
     return profile;

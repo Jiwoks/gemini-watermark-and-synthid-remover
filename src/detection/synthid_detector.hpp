@@ -30,9 +30,9 @@ private:
     FftContext& fft_;
 
     static constexpr float kWeightNoiseCorr = 0.35f;
-    static constexpr float kWeightCarrierPhase = 0.35f;
-    static constexpr float kWeightStructure = 0.15f;
-    static constexpr float kWeightMultiScale = 0.15f;
+    static constexpr float kWeightCarrierPhase = 0.40f;
+    static constexpr float kWeightStructure = 0.20f;
+    static constexpr float kWeightMultiScale = 0.05f;
 
     float noise_correlation(const cv::Mat& channel,
                             const cv::Mat& profile_mag) const;
@@ -41,7 +41,8 @@ private:
                                  const cv::Mat& profile_phase) const;
 
     float structure_ratio(const cv::Mat& channel_fft,
-                          const cv::Mat& profile_mag) const;
+                          const cv::Mat& profile_mag,
+                          const cv::Mat& profile_consistency) const;
 
     float multi_scale_consistency(const cv::Mat& image,
                                   const SpectralProfile& profile) const;

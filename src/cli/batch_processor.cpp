@@ -4,6 +4,7 @@
 #include "core/fft_context.hpp"
 #include "synthid/spectral_codebook.hpp"
 #include "synthid/codebook_subtractor.hpp"
+#include "synthid/noise_residual_subtractor.hpp"
 
 #include <opencv2/imgcodecs.hpp>
 #include <spdlog/spdlog.h>
@@ -68,14 +69,20 @@ static int process_single(const fs::path& input, const CliOptions& opts) {
 
     // SynthID processing
     if ((opts.mode == CliMode::AutoRemove && opts.synthid) || opts.mode == CliMode::SynthidOnly) {
+        RemovalConfig config;
+        config.custom_strength = opts.synthid_strength;
+        config.phase_adaptive = opts.phase_adaptive;
+
         if (!opts.codebook_path.empty()) {
             FftContext fft;
             SpectralCodebook codebook;
             codebook.load(opts.codebook_path);
             CodebookSubtractor subtractor(fft);
-            RemovalConfig config;
-            config.custom_strength = opts.synthid_strength;
             subtractor.remove_synthid(image, codebook, config);
+        } else if (opts.codebook_free) {
+            FftContext fft;
+            NoiseResidualSubtractor subtractor(fft);
+            subtractor.remove_synthid(image, config);
         }
     }
 
