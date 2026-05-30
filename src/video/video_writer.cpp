@@ -1,1 +1,395 @@
-// Placeholder for video writer implementation
+#include "video/video_writer.hpp"
+#include "video/video_reader.hpp"
+
+#include <spdlog/spdlog.h>
+#include <vector>
+
+extern "C" {
+#include <libavformat/avformat.h>
+#include <libavcodec/avcodec.h>
+#include <libswscale/swscale.h>
+#include <libavutil/pixfmt.h>
+#include <libavutil/opt.h>
+#include <libavutil/rational.h>
+#include <libavutil/mathematics.h>
+}
+
+namespace wmr {
+
+VideoWriter::VideoWriter() = default;
+
+VideoWriter::~VideoWriter() {
+    close();
+}
+
+bool VideoWriter::open(const std::string& path, int width, int height, double fps,
+                       const EncodeOptions& opts) {
+    close();
+
+    if (width <= 0 || height <= 0 || fps <= 0.0) {
+        spdlog::error("VideoWriter: invalid parameters ({}x{}, {:.2f} fps)", width, height, fps);
+        return false;
+    }
+
+    fps_ = fps;
+
+    // Allocate output format context for MP4
+    int ret = avformat_alloc_output_context2(&fmt_ctx_, nullptr, "mp4", path.c_str());
+    if (ret < 0 || !fmt_ctx_) {
+        spdlog::error("VideoWriter: failed to allocate output context: error {}", ret);
+        close();
+        return false;
+    }
+
+    // Find encoder
+    const AVCodec* codec = avcodec_find_encoder_by_name(opts.codec.c_str());
+    if (!codec) {
+        spdlog::error("VideoWriter: encoder '{}' not found", opts.codec);
+        close();
+        return false;
+    }
+
+    // Create video stream
+    video_stream_ = avformat_new_stream(fmt_ctx_, codec);
+    if (!video_stream_) {
+        spdlog::error("VideoWriter: failed to create video stream");
+        close();
+        return false;
+    }
+
+    // Allocate codec context
+    codec_ctx_ = avcodec_alloc_context3(codec);
+    if (!codec_ctx_) {
+        spdlog::error("VideoWriter: failed to allocate codec context");
+        close();
+        return false;
+    }
+
+    // Configure codec parameters
+    codec_ctx_->width = width;
+    codec_ctx_->height = height;
+    codec_ctx_->time_base = av_inv_q(av_d2q(fps, 100000));
+    codec_ctx_->framerate = av_d2q(fps, 100000);
+    codec_ctx_->pix_fmt = AV_PIX_FMT_YUV420P;
+    codec_ctx_->gop_size = 12;
+    codec_ctx_->max_b_frames = 2;
+
+    // Set x264/x265 encoder options
+    if (opts.codec.find("264") != std::string::npos ||
+        opts.codec.find("265") != std::string::npos) {
+        av_opt_set(codec_ctx_->priv_data, "crf", std::to_string(opts.crf).c_str(), 0);
+        av_opt_set(codec_ctx_->priv_data, "preset", opts.preset.c_str(), 0);
+        if (!opts.profile.empty()) {
+            av_opt_set(codec_ctx_->priv_data, "profile", opts.profile.c_str(), 0);
+        }
+    }
+
+    // Open encoder
+    ret = avcodec_open2(codec_ctx_, codec, nullptr);
+    if (ret < 0) {
+        spdlog::error("VideoWriter: failed to open encoder: error {}", ret);
+        close();
+        return false;
+    }
+
+    // Copy codec parameters to stream
+    ret = avcodec_parameters_from_context(video_stream_->codecpar, codec_ctx_);
+    if (ret < 0) {
+        spdlog::error("VideoWriter: failed to copy codec params to stream: error {}", ret);
+        close();
+        return false;
+    }
+
+    // Open output file
+    if (!(fmt_ctx_->oformat->flags & AVFMT_NOFILE)) {
+        ret = avio_open(&fmt_ctx_->pb, path.c_str(), AVIO_FLAG_WRITE);
+        if (ret < 0) {
+            spdlog::error("VideoWriter: failed to open output file '{}': error {}", path, ret);
+            close();
+            return false;
+        }
+    }
+
+    // Write header
+    ret = avformat_write_header(fmt_ctx_, nullptr);
+    if (ret < 0) {
+        spdlog::error("VideoWriter: failed to write header: error {}", ret);
+        close();
+        return false;
+    }
+    header_written_ = true;
+
+    // Allocate encoding resources
+    packet_ = av_packet_alloc();
+    if (!packet_) {
+        spdlog::error("VideoWriter: failed to allocate packet");
+        close();
+        return false;
+    }
+
+    frame_ = av_frame_alloc();
+    if (!frame_) {
+        spdlog::error("VideoWriter: failed to allocate frame");
+        close();
+        return false;
+    }
+
+    frame_->format = AV_PIX_FMT_YUV420P;
+    frame_->width = width;
+    frame_->height = height;
+    ret = av_frame_get_buffer(frame_, 0);
+    if (ret < 0) {
+        spdlog::error("VideoWriter: failed to allocate frame buffer: error {}", ret);
+        close();
+        return false;
+    }
+
+    // Create SwsContext for BGR24 -> YUV420P conversion
+    sws_ctx_ = sws_getContext(
+        width, height, AV_PIX_FMT_BGR24,
+        width, height, AV_PIX_FMT_YUV420P,
+        SWS_BILINEAR, nullptr, nullptr, nullptr);
+    if (!sws_ctx_) {
+        spdlog::error("VideoWriter: failed to create SwsContext");
+        close();
+        return false;
+    }
+
+    pts_counter_ = 0;
+    audio_copied_ = false;
+
+    spdlog::info("VideoWriter: opened '{}' ({}x{}, {:.2f} fps, codec={}, crf={}, preset={})",
+                 path, width, height, fps, opts.codec, opts.crf, opts.preset);
+    return true;
+}
+
+bool VideoWriter::write_frame(const cv::Mat& frame) {
+    if (!codec_ctx_ || !sws_ctx_ || !frame_) {
+        spdlog::error("VideoWriter: not open");
+        return false;
+    }
+
+    if (frame.empty() || frame.type() != CV_8UC3) {
+        spdlog::error("VideoWriter: invalid frame (empty={}, type={})",
+                       frame.empty(), frame.type());
+        return false;
+    }
+
+    // Make frame writable
+    int ret = av_frame_make_writable(frame_);
+    if (ret < 0) {
+        spdlog::error("VideoWriter: failed to make frame writable: error {}", ret);
+        return false;
+    }
+
+    // Convert BGR24 -> YUV420P
+    const uint8_t* src_ptrs[1] = { frame.data };
+    int src_stride[1] = { static_cast<int>(frame.step1()) };
+
+    sws_scale(sws_ctx_,
+              src_ptrs, src_stride,
+              0, frame.rows,
+              frame_->data, frame_->linesize);
+
+    // Set PTS
+    frame_->pts = pts_counter_++;
+
+    // Send frame to encoder
+    ret = avcodec_send_frame(codec_ctx_, frame_);
+    if (ret < 0) {
+        spdlog::error("VideoWriter: error sending frame: error {}", ret);
+        return false;
+    }
+
+    // Receive encoded packets
+    while (ret >= 0) {
+        ret = avcodec_receive_packet(codec_ctx_, packet_);
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            break;
+        }
+        if (ret < 0) {
+            spdlog::error("VideoWriter: error receiving packet: error {}", ret);
+            return false;
+        }
+
+        // Rescale PTS from codec time_base to stream time_base
+        av_packet_rescale_ts(packet_, codec_ctx_->time_base, video_stream_->time_base);
+        packet_->stream_index = video_stream_->index;
+
+        ret = av_interleaved_write_frame(fmt_ctx_, packet_);
+        if (ret < 0) {
+            spdlog::error("VideoWriter: error writing packet: error {}", ret);
+            return false;
+        }
+    }
+
+    return true;
+}
+
+bool VideoWriter::copy_audio_from(VideoReader& reader) {
+    if (!fmt_ctx_ || !header_written_) {
+        spdlog::error("VideoWriter: not open, cannot copy audio");
+        return false;
+    }
+
+    AVFormatContext* in_fmt_ctx = reader.format_context();
+    int in_video_idx = reader.video_stream_index();
+
+    if (!in_fmt_ctx) {
+        spdlog::error("VideoWriter: reader has no format context");
+        return false;
+    }
+
+    // Find all audio streams in input and create corresponding output streams
+    struct AudioStreamMapping {
+        int in_stream_idx;
+        int out_stream_idx;
+    };
+    std::vector<AudioStreamMapping> audio_mappings;
+
+    for (unsigned int i = 0; i < in_fmt_ctx->nb_streams; ++i) {
+        if (static_cast<int>(i) == in_video_idx) {
+            continue; // Skip video stream
+        }
+        if (in_fmt_ctx->streams[i]->codecpar->codec_type != AVMEDIA_TYPE_AUDIO) {
+            continue; // Skip non-audio streams
+        }
+
+        AVStream* in_stream = in_fmt_ctx->streams[i];
+        AVStream* out_stream = avformat_new_stream(fmt_ctx_, nullptr);
+        if (!out_stream) {
+            spdlog::error("VideoWriter: failed to create audio output stream");
+            return false;
+        }
+
+        // Copy codec parameters (stream copy, no re-encoding)
+        int ret = avcodec_parameters_copy(out_stream->codecpar, in_stream->codecpar);
+        if (ret < 0) {
+            spdlog::error("VideoWriter: failed to copy audio codec params: error {}", ret);
+            return false;
+        }
+        out_stream->codecpar->codec_tag = 0;
+
+        audio_mappings.push_back({static_cast<int>(i), static_cast<int>(out_stream->index)});
+        spdlog::info("VideoWriter: mapping audio stream {} -> output stream {}",
+                     i, out_stream->index);
+    }
+
+    if (audio_mappings.empty()) {
+        spdlog::info("VideoWriter: no audio streams found in input");
+        audio_copied_ = true;
+        return true;
+    }
+
+    // Seek input to beginning
+    int ret = av_seek_frame(in_fmt_ctx, -1, 0, AVSEEK_FLAG_BACKWARD);
+    if (ret < 0) {
+        spdlog::warn("VideoWriter: failed to seek input to start (error {}), "
+                     "audio may start from current position", ret);
+    }
+
+    // Read all packets and copy audio
+    AVPacket* read_pkt = av_packet_alloc();
+    if (!read_pkt) {
+        spdlog::error("VideoWriter: failed to allocate read packet");
+        return false;
+    }
+
+    int64_t audio_packets_written = 0;
+
+    while (true) {
+        ret = av_read_frame(in_fmt_ctx, read_pkt);
+        if (ret < 0) {
+            if (ret == AVERROR_EOF) {
+                break;
+            }
+            spdlog::warn("VideoWriter: error reading audio packet: error {}", ret);
+            break;
+        }
+
+        // Check if this packet belongs to a mapped audio stream
+        for (const auto& mapping : audio_mappings) {
+            if (read_pkt->stream_index == mapping.in_stream_idx) {
+                // Rescale timestamps from input stream to output stream
+                AVStream* in_s = in_fmt_ctx->streams[mapping.in_stream_idx];
+                AVStream* out_s = fmt_ctx_->streams[mapping.out_stream_idx];
+
+                av_packet_rescale_ts(read_pkt, in_s->time_base, out_s->time_base);
+                read_pkt->stream_index = mapping.out_stream_idx;
+                read_pkt->pos = -1;
+
+                ret = av_interleaved_write_frame(fmt_ctx_, read_pkt);
+                if (ret < 0) {
+                    spdlog::warn("VideoWriter: error writing audio packet: error {}", ret);
+                } else {
+                    ++audio_packets_written;
+                }
+                break;
+            }
+        }
+
+        av_packet_unref(read_pkt);
+    }
+
+    av_packet_free(&read_pkt);
+
+    spdlog::info("VideoWriter: copied {} audio packets", audio_packets_written);
+    audio_copied_ = true;
+    return true;
+}
+
+void VideoWriter::close() {
+    // Flush encoder
+    if (codec_ctx_ && header_written_) {
+        int ret = avcodec_send_frame(codec_ctx_, nullptr);
+        if (ret >= 0) {
+            while (true) {
+                ret = avcodec_receive_packet(codec_ctx_, packet_);
+                if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+                    break;
+                }
+                if (ret < 0) {
+                    break;
+                }
+                av_packet_rescale_ts(packet_, codec_ctx_->time_base, video_stream_->time_base);
+                packet_->stream_index = video_stream_->index;
+                av_interleaved_write_frame(fmt_ctx_, packet_);
+            }
+        }
+    }
+
+    // Write trailer
+    if (header_written_ && fmt_ctx_) {
+        av_write_trailer(fmt_ctx_);
+        header_written_ = false;
+    }
+
+    // Free resources in reverse order
+    if (sws_ctx_) {
+        sws_freeContext(sws_ctx_);
+        sws_ctx_ = nullptr;
+    }
+    if (frame_) {
+        av_frame_free(&frame_);
+    }
+    if (packet_) {
+        av_packet_free(&packet_);
+    }
+    if (codec_ctx_) {
+        avcodec_free_context(&codec_ctx_);
+    }
+    if (fmt_ctx_) {
+        if (!(fmt_ctx_->oformat->flags & AVFMT_NOFILE) && fmt_ctx_->pb) {
+            avio_closep(&fmt_ctx_->pb);
+        }
+        avformat_free_context(fmt_ctx_);
+        fmt_ctx_ = nullptr;
+    }
+
+    video_stream_ = nullptr;
+    pts_counter_ = 0;
+    fps_ = 0.0;
+    audio_copied_ = false;
+}
+
+} // namespace wmr
