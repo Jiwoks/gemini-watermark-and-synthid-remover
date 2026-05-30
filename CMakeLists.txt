@@ -19,6 +19,9 @@ set(SOURCES
     src/synthid/codebook_builder.cpp
     src/cli/cli_app.cpp
     src/cli/batch_processor.cpp
+    src/video/video_reader.cpp
+    src/video/video_writer.cpp
+    src/video/video_processor.cpp
 )
 
 # Executable
@@ -41,6 +44,7 @@ find_package(fmt REQUIRED)
 find_package(CLI11 REQUIRED)
 find_package(spdlog REQUIRED)
 find_package(FFTW3f REQUIRED)
+find_package(FFMPEG REQUIRED)
 
 target_link_libraries(${PROJECT_NAME} PRIVATE
     opencv_core
@@ -51,9 +55,10 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     CLI11::CLI11
     spdlog::spdlog
     ${FFTW3f_LIBRARIES}
+    ${FFMPEG_LIBRARIES}
 )
-target_include_directories(${PROJECT_NAME} PRIVATE ${FFTW3f_INCLUDE_DIRS})
-target_link_directories(${PROJECT_NAME} PRIVATE ${FFTW3f_LIBRARY_DIRS})
+target_include_directories(${PROJECT_NAME} PRIVATE ${FFTW3f_INCLUDE_DIRS} ${FFMPEG_INCLUDE_DIRS})
+target_link_directories(${PROJECT_NAME} PRIVATE ${FFTW3f_LIBRARY_DIRS} ${FFMPEG_LIBRARY_DIRS})
 
 # Platform-specific flags
 if(APPLE)
