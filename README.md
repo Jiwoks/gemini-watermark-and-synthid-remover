@@ -158,14 +158,13 @@ Both are placed in the bottom-right corner.
 
 ### Video Watermark Removal
 
-Video processing uses reverse alpha blending — the same lossless method as image removal — applied frame-by-frame:
+Video processing uses pure reverse alpha blending — the same lossless method as image removal — applied frame-by-frame:
 
 1. **Shot-level detection** — samples frames across the video, takes median position/confidence
-2. **Per-frame occlusion gate** — skips frames where watermark isn't reliably detected
-3. **Position refinement** — falls back to shot anchor if per-frame detection drifts
-4. **Reverse alpha blend** — exact inversion using profile-specific alpha maps (no inpainting artifacts)
-5. **Gaussian residual cleanup** — soft blend for any remaining edge artifacts
-6. **Audio passthrough** — copies audio streams without re-encoding
+2. **Anchor-based fallback** — uses shot anchor position for frames where per-frame detection fails (no frames skipped)
+3. **Position refinement** — per-frame detection refines position when confidence is high
+4. **Reverse alpha blend** — exact inversion using profile-specific alpha maps
+5. **Audio passthrough** — copies audio streams without re-encoding
 
 Supports both Gemini (diamond) and Veo (text) video watermarks via `--legacy` flag.
 
