@@ -96,7 +96,7 @@ static int process_single(const fs::path& input, const CliOptions& opts) {
             out_path /= input.filename();
         }
     } else {
-        out_path = input;
+        out_path = input.parent_path() / (input.stem().string() + "_clean" + input.extension().string());
     }
 
     if (!out_path.parent_path().empty() && !fs::exists(out_path.parent_path())) {

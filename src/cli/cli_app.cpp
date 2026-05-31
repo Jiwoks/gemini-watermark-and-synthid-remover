@@ -182,7 +182,13 @@ static int process_single_image(const CliOptions& opts) {
     }
 
     // Save output
-    std::string output = opts.output_path.empty() ? opts.input_path : opts.output_path;
+    std::string output;
+    if (!opts.output_path.empty()) {
+        output = opts.output_path;
+    } else {
+        std::filesystem::path p(opts.input_path);
+        output = (p.parent_path() / (p.stem().string() + "_clean" + p.extension().string())).string();
+    }
     std::filesystem::path out_path(output);
     if (!out_path.parent_path().empty() && !std::filesystem::exists(out_path.parent_path())) {
         std::filesystem::create_directories(out_path.parent_path());
