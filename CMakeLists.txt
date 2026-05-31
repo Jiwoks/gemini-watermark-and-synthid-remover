@@ -60,9 +60,39 @@ target_link_libraries(${PROJECT_NAME} PRIVATE
     FFMPEG::avcodec
     FFMPEG::avutil
     FFMPEG::swscale
+    FFMPEG::swresample
 )
 target_include_directories(${PROJECT_NAME} PRIVATE ${FFTW3f_INCLUDE_DIRS})
 target_link_directories(${PROJECT_NAME} PRIVATE ${FFTW3f_LIBRARY_DIRS})
+
+# macOS system frameworks required by FFmpeg
+if(APPLE)
+    find_library(COREMEDIA_LIB CoreMedia)
+    find_library(COREVIDEO_LIB CoreVideo)
+    find_library(COREAUDIO_LIB CoreAudio)
+    find_library(VIDEOTOOLBOX_LIB VideoToolbox)
+    find_library(COREFOUNDATION_LIB CoreFoundation)
+    find_library(AUDIOTOOLBOX_LIB AudioToolbox)
+    find_library(ACCELERATE_LIB Accelerate)
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${COREMEDIA_LIB}
+        ${COREVIDEO_LIB}
+        ${COREAUDIO_LIB}
+        ${VIDEOTOOLBOX_LIB}
+        ${COREFOUNDATION_LIB}
+        ${AUDIOTOOLBOX_LIB}
+        ${ACCELERATE_LIB}
+    )
+    # x264 is a transitive dependency of FFmpeg's libx264 codec
+    find_package(PkgConfig QUIET)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(X264 QUIET x264)
+    endif()
+    find_library(X264_LIBRARY NAMES x264)
+    if(X264_LIBRARY)
+        target_link_libraries(${PROJECT_NAME} PRIVATE ${X264_LIBRARY})
+    endif()
+endif()
 
 # Platform-specific flags
 if(APPLE)
