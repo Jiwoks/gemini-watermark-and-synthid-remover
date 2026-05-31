@@ -17,7 +17,7 @@
 #include <filesystem>
 
 #ifndef APP_VERSION
-#define APP_VERSION "0.1.0"
+#define APP_VERSION "0.2.0"
 #endif
 
 #ifndef APP_NAME
@@ -234,9 +234,16 @@ static int process_video(const CliOptions& opts) {
 }
 
 int run_cli(int argc, char* argv[]) {
-    CLI::App app{"Watermark Remover — remove Gemini visible and SynthID invisible watermarks", APP_NAME};
+    CLI::App app{"wmr — remove Gemini/Veo visible watermarks and SynthID invisible watermarks\n"
+                 "Copyright 2026 Frédéric Guigand", APP_NAME};
     app.set_version_flag("-V,--version", APP_VERSION);
     app.fallthrough();
+
+    // Show help when called with no arguments
+    if (argc <= 1) {
+        std::cout << app.help() << std::endl;
+        return 0;
+    }
 
     CliOptions opts;
 
