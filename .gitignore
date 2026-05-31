@@ -74,6 +74,21 @@ Temporary Items
 
 # Reference data (large datasets)
 *.npz
+reference-images/hf-data/
+reference-images/codebook/*.wcb
+reference-images/synthid/
+
+# Derived test data
+test-images/reference-images/
+
+# Temp analysis outputs
+analysis_*.png
+manual-test.png
+test-output*.png
+reference-images/output_*.png
+reference-images/sample_*.png
+reference-images/test_*.png
+reference-images/clean_gradient.png
 
 # Output
 output/
@@ -81,4 +96,3 @@ results/
 
 # vcpkg
 vcpkg_installed/
-test-output.png
