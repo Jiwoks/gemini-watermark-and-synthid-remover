@@ -15,6 +15,7 @@ struct InpaintConfig {
     InpaintMethod method = InpaintMethod::Gaussian;
     int radius = 10;
     int padding = 32;
+    bool full_mask = false;  // use full alpha region as inpaint mask (vs gradient edges)
 };
 
 void inpaint_residual(

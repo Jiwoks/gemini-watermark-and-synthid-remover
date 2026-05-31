@@ -55,4 +55,53 @@ inline WatermarkPosition get_watermark_config(int width, int height) {
     return {32, 32, 48};
 }
 
+// Video-specific watermark geometry
+// Gemini/Veo videos use different positions than still images
+enum class VideoVariant {
+    Auto,       // auto-detect from resolution
+    P720_1,     // 720p standard (48x48, margin 72,72)
+    P720_2,     // 720p compact (44x44, margin 29,40)
+    P1080p,     // 1080p (96x96, margin 192,192)
+};
+
+enum class VideoProfile {
+    GeminiDiamond,
+    VeoLegacy,
+};
+
+inline WatermarkPosition get_video_watermark_geometry(
+    VideoVariant variant, int width, int height, VideoProfile profile = VideoProfile::GeminiDiamond)
+{
+    // Veo legacy text watermark — different shape and position
+    if (profile == VideoProfile::VeoLegacy) {
+        // Reference alpha maps: 68x30 (small), 99x43 (large)
+        switch (variant) {
+            case VideoVariant::P1080p:
+                return {17, 18, 99};  // 99x43 large Veo text
+            default:
+                return {17, 18, 68};  // 68x30 small Veo text
+        }
+    }
+
+    // Gemini V2 diamond watermark
+    switch (variant) {
+        case VideoVariant::P720_1:
+            return {72, 72, 48};
+        case VideoVariant::P720_2:
+            return {29, 40, 44};
+        case VideoVariant::P1080p:
+            return {192, 192, 96};
+        case VideoVariant::Auto:
+            break;
+    }
+
+    // Auto-detect from resolution
+    int max_dim = std::max(width, height);
+    if (max_dim >= 1920) {
+        return {192, 192, 96};
+    }
+    // Default to 720p-1 for 720p content
+    return {72, 72, 48};
+}
+
 } // namespace wmr

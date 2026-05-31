@@ -60,10 +60,15 @@ void inpaint_residual(
         cv::Mat grad_weight;
         cv::sqrt(grad_norm, grad_weight);
 
-        // Dilate to cover residual spread
-        cv::Mat dk = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+        // Also cover interior of watermark region (where alpha > threshold)
+        cv::Mat alpha_mask;
+        cv::threshold(alpha_resized, alpha_mask, 0.05f, 1.0f, cv::THRESH_BINARY);
+        grad_weight = cv::max(grad_weight, alpha_mask);
+
+        // Dilate to cover residual spread and smooth transitions
+        cv::Mat dk = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(7, 7));
         cv::dilate(grad_weight, grad_weight, dk);
-        cv::GaussianBlur(grad_weight, grad_weight, cv::Size(0, 0), 2.0);
+        cv::GaussianBlur(grad_weight, grad_weight, cv::Size(0, 0), 3.0);
         grad_weight *= strength;
         cv::threshold(grad_weight, grad_weight, 1.0, 1.0, cv::THRESH_TRUNC);
 
@@ -72,11 +77,12 @@ void inpaint_residual(
         grad_weight.copyTo(weight(inner));
         cv::GaussianBlur(weight, weight, cv::Size(0, 0), 1.0);
 
-        // Gaussian blur the image
-        int ksize = config.radius * 2 + 1;
+        // Gaussian blur the image — use large sigma so center is influenced
+        // by surrounding unmodified pixels, not the modified watermark center
+        int ksize = config.radius * 4 + 1;
         if (ksize % 2 == 0) ksize++;
-        ksize = std::max(ksize, 3);
-        double sigma = config.radius * 0.8;
+        ksize = std::max(ksize, 31);
+        double sigma = config.radius * 2.0;
 
         cv::Mat padded_area = image(padded).clone();
         cv::Mat blurred;
@@ -103,17 +109,30 @@ void inpaint_residual(
                       strength * 100.0f, active);
     } else {
         // --- TELEA / Navier-Stokes ---
-        cv::Mat grad_u8;
-        grad_mag.convertTo(grad_u8, CV_8U,
-                           255.0 / (grad_max - grad_min),
-                           -grad_min * 255.0 / (grad_max - grad_min));
-
         cv::Mat sparse_mask;
-        cv::threshold(grad_u8, sparse_mask, 20, 255, cv::THRESH_BINARY);
 
-        cv::Mat dilate_kernel = cv::getStructuringElement(
-            cv::MORPH_ELLIPSE, cv::Size(5, 5));
-        cv::dilate(sparse_mask, sparse_mask, dilate_kernel);
+        if (config.full_mask) {
+            // Full-region mode: use entire alpha map as inpaint mask
+            cv::Mat alpha_mask;
+            cv::threshold(alpha_resized, alpha_mask, 0.02f, 255.0f, cv::THRESH_BINARY);
+            alpha_mask.convertTo(sparse_mask, CV_8U);
+
+            // Dilate to cover compression spread
+            cv::Mat dk = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+            cv::dilate(sparse_mask, sparse_mask, dk);
+        } else {
+            // Edge mode: only inpaint at gradient edges
+            cv::Mat grad_u8;
+            grad_mag.convertTo(grad_u8, CV_8U,
+                               255.0 / (grad_max - grad_min),
+                               -grad_min * 255.0 / (grad_max - grad_min));
+
+            cv::threshold(grad_u8, sparse_mask, 20, 255, cv::THRESH_BINARY);
+
+            cv::Mat dilate_kernel = cv::getStructuringElement(
+                cv::MORPH_ELLIPSE, cv::Size(5, 5));
+            cv::dilate(sparse_mask, sparse_mask, dilate_kernel);
+        }
 
         int masked = cv::countNonZero(sparse_mask);
         if (masked == 0) {

@@ -202,7 +202,7 @@ bool VideoWriter::open(const std::string& path, int width, int height, double fp
     sws_ctx_ = sws_getContext(
         width, height, AV_PIX_FMT_BGR24,
         width, height, AV_PIX_FMT_YUV420P,
-        SWS_BILINEAR, nullptr, nullptr, nullptr);
+        SWS_BICUBIC, nullptr, nullptr, nullptr);
     if (!sws_ctx_) {
         spdlog::error("VideoWriter: failed to create SwsContext");
         close();

@@ -6,8 +6,11 @@
 
 namespace wmr {
 
-NccDetector::NccDetector(const cv::Mat& alpha_small, const cv::Mat& alpha_large)
-    : alpha_map_small_(alpha_small.clone()), alpha_map_large_(alpha_large.clone()) {}
+NccDetector::NccDetector(const cv::Mat& alpha_small, const cv::Mat& alpha_large,
+                         const cv::Mat& alpha_veo_text)
+    : alpha_map_small_(alpha_small.clone()),
+      alpha_map_large_(alpha_large.clone()),
+      alpha_map_veo_text_(alpha_veo_text.empty() ? cv::Mat() : alpha_veo_text.clone()) {}
 
 const cv::Mat& NccDetector::get_alpha_map(WatermarkSize size) const {
     return (size == WatermarkSize::Small) ? alpha_map_small_ : alpha_map_large_;
@@ -15,7 +18,9 @@ const cv::Mat& NccDetector::get_alpha_map(WatermarkSize size) const {
 
 DetectionResult NccDetector::detect(
     const cv::Mat& image,
-    std::optional<WatermarkSize> force_size) const
+    std::optional<WatermarkSize> force_size,
+    std::optional<WatermarkPosition> force_position,
+    const cv::Mat* custom_alpha) const
 {
     DetectionResult result;
 
@@ -23,9 +28,22 @@ DetectionResult NccDetector::detect(
 
     const WatermarkSize size = force_size.value_or(
         get_watermark_size(image.cols, image.rows));
-    const auto config = get_watermark_config(image.cols, image.rows);
-    const cv::Point pos = config.get_position(image.cols, image.rows);
-    const cv::Mat& alpha_map = get_alpha_map(size);
+
+    // Use forced position (for video) or fall back to image defaults
+    WatermarkPosition config = force_position.value_or(
+        get_watermark_config(image.cols, image.rows));
+
+    // Select alpha map: custom (e.g., Veo text) or standard square
+    const cv::Mat& alpha_map = custom_alpha ? *custom_alpha : get_alpha_map(size);
+
+    // Compute position — for non-square custom alpha, use actual dimensions
+    cv::Point pos;
+    if (custom_alpha) {
+        pos = {image.cols - config.margin_right - custom_alpha->cols,
+               image.rows - config.margin_bottom - custom_alpha->rows};
+    } else {
+        pos = config.get_position(image.cols, image.rows);
+    }
 
     result.size = size;
     result.region = cv::Rect(pos.x, pos.y, alpha_map.cols, alpha_map.rows);

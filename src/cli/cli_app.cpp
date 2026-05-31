@@ -226,9 +226,20 @@ static int process_build_codebook(const CliOptions& opts) {
 
 static int process_video(const CliOptions& opts) {
     VideoWatermarkConfig config;
-    config.profile = opts.legacy_profile ? VideoWatermarkProfile::VeoLegacy
-                                          : VideoWatermarkProfile::GeminiDiamond;
-    config.variant = opts.video_variant;
+    config.profile = opts.legacy_profile ? VideoProfile::VeoLegacy
+                                          : VideoProfile::GeminiDiamond;
+
+    // Parse variant string
+    if (opts.video_variant_str == "720p-1") {
+        config.variant = VideoVariant::P720_1;
+    } else if (opts.video_variant_str == "720p-2") {
+        config.variant = VideoVariant::P720_2;
+    } else if (opts.video_variant_str == "1080p") {
+        config.variant = VideoVariant::P1080p;
+    } else {
+        config.variant = VideoVariant::Auto;
+    }
+
     config.force = opts.force;
     config.inpaint_strength = opts.inpaint_strength;
 
@@ -348,7 +359,7 @@ int run_cli(int argc, char* argv[]) {
     video_cmd->add_option("-o,--output", opts.output_path, "Output path (default: <input>_clean.mp4)");
     video_cmd->add_flag("--legacy", opts.legacy_profile,
                          "Use Veo legacy text profile");
-    video_cmd->add_option("--variant", opts.video_variant,
+    video_cmd->add_option("--variant", opts.video_variant_str,
                            "Force geometry: 720p-1, 720p-2, 1080p");
     video_cmd->add_flag("-f,--force", opts.force, "Skip detection");
     video_cmd->add_option("--crf", opts.video_crf, "Encode CRF")

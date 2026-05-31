@@ -30,7 +30,7 @@ struct CliOptions {
     bool codebook_free = false;
     bool phase_adaptive = false;
     bool legacy_profile = false;
-    std::string video_variant;
+    std::string video_variant_str;
     int video_crf = 14;
     std::string video_preset = "slow";
     std::string video_codec = "libx264";
