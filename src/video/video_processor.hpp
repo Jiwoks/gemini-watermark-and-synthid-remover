@@ -10,14 +10,9 @@
 
 namespace wmr {
 
-enum class VideoWatermarkProfile {
-    GeminiDiamond,
-    VeoLegacy,
-};
-
 struct VideoWatermarkConfig {
-    VideoWatermarkProfile profile = VideoWatermarkProfile::GeminiDiamond;
-    std::string variant;
+    VideoProfile profile = VideoProfile::GeminiDiamond;
+    VideoVariant variant = VideoVariant::Auto;
     bool force = false;
     float inpaint_strength = 0.85f;
 };
@@ -56,6 +51,11 @@ private:
     ShotDetection detect_in_shot(class VideoReader& reader,
                                  class WatermarkEngine& engine,
                                  const VideoWatermarkConfig& config);
+
+    WatermarkPosition resolve_geometry(
+        const VideoWatermarkConfig& config, int width, int height) const;
+
+    WatermarkSize geometry_to_size(const WatermarkPosition& geo) const;
 };
 
 } // namespace wmr

@@ -8,6 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Phase 6: Video Watermark Removal + CLI Polish — COMPLETE
 
+#### Fixed
+- Video watermark removal now uses pure reverse alpha blend (`remove_watermark_alpha_only`) instead of alpha blend + Gaussian inpaint — eliminates blur/diamond artifacts on both Gemini and Veo
+- All frames are now processed when shot detection confirms the watermark — previously occlusion gate (NCC < 0.35) skipped frames; now falls back to shot anchor position for undetected frames
+- Integrated upstream GeminiWatermarkTool V2 diamond alpha maps (36x36 and 96x96) for more accurate Gemini video removal
+- Added `correct_alpha_for_background()` to recover true alpha from captures on non-black backgrounds
+
+#### Changed
+- Video pipeline: `remove_watermark_detected` → `remove_watermark_alpha_only` for lossless frame restoration
+- Detection mode no longer skips frames — uses shot anchor as fallback when per-frame NCC is low
+
 #### Added
 - `VideoReader` class (`src/video/video_reader.hpp/cpp`) — FFmpeg demux+decode pipeline with seeking and frame counting
 - `VideoWriter` class (`src/video/video_writer.hpp/cpp`) — FFmpeg encode pipeline (libx264, CRF 14, High profile) with audio passthrough:

@@ -158,12 +158,16 @@ Both are placed in the bottom-right corner.
 
 ### Video Watermark Removal
 
-Video processing uses the same reverse alpha blending engine, applied frame-by-frame:
+Video processing uses reverse alpha blending — the same lossless method as image removal — applied frame-by-frame:
 
 1. **Shot-level detection** — samples frames across the video, takes median position/confidence
 2. **Per-frame occlusion gate** — skips frames where watermark isn't reliably detected
 3. **Position refinement** — falls back to shot anchor if per-frame detection drifts
-4. **Audio passthrough** — copies audio streams without re-encoding
+4. **Reverse alpha blend** — exact inversion using profile-specific alpha maps (no inpainting artifacts)
+5. **Gaussian residual cleanup** — soft blend for any remaining edge artifacts
+6. **Audio passthrough** — copies audio streams without re-encoding
+
+Supports both Gemini (diamond) and Veo (text) video watermarks via `--legacy` flag.
 
 ### SynthID Removal
 
@@ -192,6 +196,7 @@ SynthID invisible watermarks are embedded via a neural encoder in the frequency 
 This project builds on research and techniques from:
 
 - [GeminiWatermarkTool](https://github.com/allenk/GeminiWatermarkTool) — reverse alpha blending, NCC detection, inpainting (by Allen Kuo)
+- [VeoWatermarkRemover](https://github.com/allenk/VeoWatermarkRemover) — video watermark removal, variant geometry calibration (by Allen Kuo)
 - [reverse-SynthID](https://github.com/aloshdenny/reverse-SynthID) — SynthID spectral analysis research
 
 ## License

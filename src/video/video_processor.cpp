@@ -13,19 +13,65 @@
 namespace wmr {
 
 // ---------------------------------------------------------------------------
+// Resolve geometry from config + resolution
+// ---------------------------------------------------------------------------
+WatermarkPosition VideoProcessor::resolve_geometry(
+    const VideoWatermarkConfig& config, int width, int height) const
+{
+    return get_video_watermark_geometry(config.variant, width, height, config.profile);
+}
+
+// ---------------------------------------------------------------------------
+// Determine WatermarkSize from geometry
+// ---------------------------------------------------------------------------
+WatermarkSize VideoProcessor::geometry_to_size(const WatermarkPosition& geo) const {
+    return (geo.logo_size > 48) ? WatermarkSize::Large : WatermarkSize::Small;
+}
+
+// ---------------------------------------------------------------------------
 // Shot-level detection: sample frames and establish watermark baseline
 // ---------------------------------------------------------------------------
 VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     VideoReader& reader,
     WatermarkEngine& engine,
-    const VideoWatermarkConfig& /*config*/)
+    const VideoWatermarkConfig& config)
 {
     ShotDetection result;
+
     const int64_t total = reader.frame_count();
     if (total <= 0) {
         spdlog::warn("Video has no frames, shot detection skipped");
         return result;
     }
+
+    // Get video-specific geometry
+    auto geo = resolve_geometry(config, reader.width(), reader.height());
+    auto wsize = geometry_to_size(geo);
+    auto default_pos = geo.get_position(reader.width(), reader.height());
+
+    // For Veo legacy, use reference alpha map (non-square: 68x30 or 99x43)
+    // For Gemini diamond, use V2 diamond alpha map (36x36 or 96x96)
+    const cv::Mat* video_alpha = nullptr;
+    if (config.profile == VideoProfile::VeoLegacy) {
+        video_alpha = (geo.logo_size > 68)
+                      ? &engine.get_veo_text_alpha_large()
+                      : &engine.get_veo_text_alpha_small();
+    } else {
+        video_alpha = (geo.logo_size > 48)
+                      ? &engine.get_v2_diamond_alpha_large()
+                      : &engine.get_v2_diamond_alpha_small();
+    }
+
+    if (video_alpha && !video_alpha->empty()) {
+        default_pos = {reader.width() - geo.margin_right - video_alpha->cols,
+                       reader.height() - geo.margin_bottom - video_alpha->rows};
+        result.region = cv::Rect(default_pos.x, default_pos.y, video_alpha->cols, video_alpha->rows);
+    } else {
+        result.region = cv::Rect(default_pos.x, default_pos.y, geo.logo_size, geo.logo_size);
+    }
+
+    result.position = default_pos;
+    result.size = wsize;
 
     // Determine sample indices: evenly spaced over first 90% of the video
     const int64_t coverage_end = static_cast<int64_t>(
@@ -42,7 +88,7 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     if (sample_count == 1) {
         cv::Mat frame;
         if (reader.seek(0) && reader.next_frame(frame) && !frame.empty()) {
-            auto det = engine.detect_watermark(frame);
+            auto det = engine.detect_watermark(frame, wsize, geo, video_alpha);
             if (det.detected) {
                 result.found = true;
                 result.position = cv::Point(det.region.x, det.region.y);
@@ -51,10 +97,6 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
                 result.region = det.region;
                 spdlog::info("Shot detection (single frame): detected at ({},{}) conf={:.2f}",
                              result.position.x, result.position.y, result.confidence);
-            } else {
-                auto wconfig = get_watermark_config(reader.width(), reader.height());
-                result.position = wconfig.get_position(reader.width(), reader.height());
-                result.size = get_watermark_size(reader.width(), reader.height());
             }
         }
         return result;
@@ -70,8 +112,10 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     std::vector<Sample> detections;
     detections.reserve(sample_count);
 
-    spdlog::info("Shot detection: sampling {} frames over first {} of {} total",
-                 sample_count, coverage_end, total);
+    spdlog::info("Shot detection: sampling {} frames over first {} of {} total "
+                 "(geo: margin={},{} size={})",
+                 sample_count, coverage_end, total,
+                 geo.margin_right, geo.margin_bottom, geo.logo_size);
 
     for (int i = 0; i < sample_count; ++i) {
         int64_t frame_idx = static_cast<int64_t>(
@@ -89,7 +133,7 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
             continue;
         }
 
-        auto det = engine.detect_watermark(frame);
+        auto det = engine.detect_watermark(frame, wsize, geo, video_alpha);
         if (det.detected) {
             detections.push_back({cv::Point(det.region.x, det.region.y),
                                   det.size, det.confidence, det.region});
@@ -102,14 +146,10 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     }
 
     // Need >50% detection rate to trust the result
-    const int threshold = (sample_count + 1) / 2;  // majority
+    const int threshold = (sample_count + 1) / 2;
     if (static_cast<int>(detections.size()) < threshold) {
         spdlog::info("Shot detection: {}/{} samples detected (< {} majority threshold)",
                      detections.size(), sample_count, threshold);
-        // Fall back to default position
-        auto wconfig = get_watermark_config(reader.width(), reader.height());
-        result.position = wconfig.get_position(reader.width(), reader.height());
-        result.size = get_watermark_size(reader.width(), reader.height());
         result.found = false;
         result.confidence = 0.0f;
         return result;
@@ -189,18 +229,40 @@ VideoResult VideoProcessor::process(const std::string& input_path,
 
     WatermarkEngine engine;
 
+    // Resolve video-specific geometry
+    auto geo = resolve_geometry(config, reader.width(), reader.height());
+    auto wsize = geometry_to_size(geo);
+
+    // Select alpha map based on profile and resolution
+    const cv::Mat* video_alpha = nullptr;
+    if (config.profile == VideoProfile::VeoLegacy) {
+        video_alpha = (geo.logo_size > 68)
+                      ? &engine.get_veo_text_alpha_large()
+                      : &engine.get_veo_text_alpha_small();
+    } else {
+        video_alpha = (geo.logo_size > 48)
+                      ? &engine.get_v2_diamond_alpha_large()
+                      : &engine.get_v2_diamond_alpha_small();
+    }
+
     // Shot-level detection
     ShotDetection shot;
     if (config.force) {
-        auto wconfig = get_watermark_config(reader.width(), reader.height());
+        cv::Point default_pos;
+        if (video_alpha && !video_alpha->empty()) {
+            default_pos = {static_cast<int>(reader.width()) - geo.margin_right - video_alpha->cols,
+                           static_cast<int>(reader.height()) - geo.margin_bottom - video_alpha->rows};
+            shot.region = cv::Rect(default_pos.x, default_pos.y, video_alpha->cols, video_alpha->rows);
+        } else {
+            default_pos = geo.get_position(reader.width(), reader.height());
+            shot.region = cv::Rect(default_pos.x, default_pos.y, geo.logo_size, geo.logo_size);
+        }
         shot.found = false;
-        shot.position = wconfig.get_position(reader.width(), reader.height());
-        shot.size = get_watermark_size(reader.width(), reader.height());
+        shot.position = default_pos;
+        shot.size = wsize;
         shot.confidence = 1.0f;
-        shot.region = cv::Rect(shot.position.x, shot.position.y,
-                               wconfig.logo_size, wconfig.logo_size);
-        spdlog::info("Force mode: using default position ({},{})",
-                     shot.position.x, shot.position.y);
+        spdlog::info("Force mode: using position ({},{}) size={}",
+                     shot.position.x, shot.position.y, geo.logo_size);
     } else {
         shot = detect_in_shot(reader, engine, config);
         reader.seek(0);
@@ -243,47 +305,42 @@ VideoResult VideoProcessor::process(const std::string& input_path,
         }
 
         if (config.force) {
-            // Force mode: always remove at anchor position
+            // Pure reverse alpha blend — no inpaint to avoid blur
             DetectionResult det;
             det.detected = true;
             det.confidence = 1.0f;
             det.region = shot.region;
             det.size = shot.size;
-            engine.remove_watermark_detected(frame, det);
+            engine.remove_watermark_alpha_only(frame, det, video_alpha);
             writer.write_frame(frame);
             ++result.frames_processed;
         } else {
-            // Detect watermark in current frame (NCC refinement)
-            auto detection = engine.detect_watermark(frame);
+            // Shot detection confirmed the watermark — process every frame.
+            // Use per-frame detection for position refinement when available,
+            // fall back to shot anchor when detection fails (occluded frames).
+            DetectionResult det;
+            det.detected = true;
+            det.confidence = shot.confidence;
+            det.region = shot.region;
+            det.size = shot.size;
 
-            if (!detection.detected ||
-                detection.confidence < kOcclusionGateNcc) {
-                // Occlusion gate: watermark not reliably detected
-                spdlog::debug("Frame {}: occluded/skipped (conf={:.2f})",
-                              frame_idx, detection.confidence);
-                writer.write_frame(frame);
-                ++result.frames_skipped;
-            } else {
-                // Position refinement: check against shot anchor
+            auto detection = engine.detect_watermark(frame, wsize, geo, video_alpha);
+            if (detection.detected &&
+                detection.confidence >= kOcclusionGateNcc) {
+                // Per-frame detection succeeded — refine position
                 cv::Point detected_pos(detection.region.x, detection.region.y);
                 int dx = std::abs(detected_pos.x - shot.position.x);
                 int dy = std::abs(detected_pos.y - shot.position.y);
 
-                if (dx > kPositionTolerancePx || dy > kPositionTolerancePx) {
-                    // Too far from anchor — use anchor position instead
-                    spdlog::debug("Frame {}: detection ({},{}) too far from anchor "
-                                  "({},{}) — using anchor",
-                                  frame_idx, detected_pos.x, detected_pos.y,
-                                  shot.position.x, shot.position.y);
-                    detection.region.x = shot.position.x;
-                    detection.region.y = shot.position.y;
-                    detection.size = shot.size;
+                if (dx <= kPositionTolerancePx && dy <= kPositionTolerancePx) {
+                    det.region = detection.region;
+                    det.size = detection.size;
                 }
-
-                engine.remove_watermark_detected(frame, detection);
-                writer.write_frame(frame);
-                ++result.frames_processed;
             }
+
+            engine.remove_watermark_alpha_only(frame, det, video_alpha);
+            writer.write_frame(frame);
+            ++result.frames_processed;
         }
 
         // Progress output

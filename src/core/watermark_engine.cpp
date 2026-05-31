@@ -10,9 +10,59 @@
 
 namespace wmr {
 
+// Correct an alpha map extracted from a non-black background capture.
+// Raw alpha = max(R,G,B)/255 includes background brightness contamination:
+//   alpha_raw = alpha_true + (bg/255) * (1 - alpha_true)
+// True alpha is recovered by: alpha_true = (alpha_raw - bg/255) / (1 - bg/255)
+// Background is estimated from border pixels of the capture (likely non-watermark).
+static cv::Mat correct_alpha_for_background(const cv::Mat& alpha_raw, const cv::Mat& bg_capture) {
+    if (alpha_raw.empty() || bg_capture.empty()) return alpha_raw;
+
+    // Estimate background from border pixels of the capture
+    cv::Mat gray;
+    if (bg_capture.channels() >= 3) {
+        std::vector<cv::Mat> channels;
+        cv::split(bg_capture, channels);
+        cv::max(channels[0], channels[1], gray);
+        cv::max(gray, channels[2], gray);
+    } else {
+        gray = bg_capture.clone();
+    }
+
+    // Collect border pixel values (top/bottom rows, left/right cols)
+    std::vector<float> border_vals;
+    int h = gray.rows, w = gray.cols;
+    for (int c = 0; c < w; ++c) {
+        border_vals.push_back(gray.at<uchar>(0, c) / 255.0f);
+        border_vals.push_back(gray.at<uchar>(h - 1, c) / 255.0f);
+    }
+    for (int r = 1; r < h - 1; ++r) {
+        border_vals.push_back(gray.at<uchar>(r, 0) / 255.0f);
+        border_vals.push_back(gray.at<uchar>(r, w - 1) / 255.0f);
+    }
+
+    // Use 25th percentile as background estimate (robust to watermark at edges)
+    std::sort(border_vals.begin(), border_vals.end());
+    float bg_norm = border_vals[border_vals.size() / 4];
+
+    if (bg_norm < 0.01f) return alpha_raw.clone();  // dark enough, no correction needed
+
+    float denom = 1.0f - bg_norm;
+    if (denom < 0.01f) return alpha_raw.clone();
+
+    cv::Mat corrected = (alpha_raw - bg_norm) / denom;
+    cv::max(corrected, 0.0f, corrected);  // clamp negatives to 0
+
+    spdlog::debug("Alpha correction: bg={:.3f}, raw max={:.3f}, corrected max={:.3f}",
+                  bg_norm, alpha_raw.ptr<float>(0)[0] != 0 ? *std::max_element(alpha_raw.begin<float>(), alpha_raw.end<float>()) : 0,
+                  *std::max_element(corrected.begin<float>(), corrected.end<float>()));
+
+    return corrected;
+}
+
 WatermarkEngine::WatermarkEngine() {
     init_alpha_maps();
-    detector_ = std::make_unique<NccDetector>(alpha_map_small_, alpha_map_large_);
+    detector_ = std::make_unique<NccDetector>(alpha_map_small_, alpha_map_large_, alpha_map_veo_text_);
 }
 
 WatermarkEngine::~WatermarkEngine() = default;
@@ -43,16 +93,80 @@ void WatermarkEngine::init_alpha_maps() {
     alpha_map_small_ = calculate_alpha_map(bg_small);
     alpha_map_large_ = calculate_alpha_map(bg_large);
 
-    spdlog::debug("Alpha maps initialized: small {}x{}, large {}x{}",
+    // Load Veo legacy text alpha map (30x22 "Veo" text)
+    if (embedded::veo_text_png_size > 0) {
+        std::vector<unsigned char> buf_veo(
+            embedded::veo_text_png, embedded::veo_text_png + embedded::veo_text_png_size);
+        cv::Mat bg_veo = cv::imdecode(buf_veo, cv::IMREAD_COLOR);
+        if (!bg_veo.empty()) {
+            alpha_map_veo_text_ = calculate_alpha_map(bg_veo);
+        }
+    }
+
+    // Load V2 diamond alpha maps — upstream Gemini 3.5+ captures
+    if (embedded::v2_diamond_36_png_size > 0) {
+        std::vector<unsigned char> buf(
+            embedded::v2_diamond_36_png, embedded::v2_diamond_36_png + embedded::v2_diamond_36_png_size);
+        cv::Mat bg = cv::imdecode(buf, cv::IMREAD_COLOR);
+        if (!bg.empty()) {
+            alpha_map_v2_diamond_36_ = correct_alpha_for_background(calculate_alpha_map(bg), bg);
+        }
+    }
+    if (embedded::v2_diamond_48_png_size > 0) {
+        std::vector<unsigned char> buf(
+            embedded::v2_diamond_48_png, embedded::v2_diamond_48_png + embedded::v2_diamond_48_png_size);
+        cv::Mat bg = cv::imdecode(buf, cv::IMREAD_COLOR);
+        if (!bg.empty()) {
+            alpha_map_v2_diamond_small_ = correct_alpha_for_background(calculate_alpha_map(bg), bg);
+        }
+    }
+    if (embedded::v2_diamond_96_png_size > 0) {
+        std::vector<unsigned char> buf(
+            embedded::v2_diamond_96_png, embedded::v2_diamond_96_png + embedded::v2_diamond_96_png_size);
+        cv::Mat bg = cv::imdecode(buf, cv::IMREAD_COLOR);
+        if (!bg.empty()) {
+            alpha_map_v2_diamond_large_ = correct_alpha_for_background(calculate_alpha_map(bg), bg);
+        }
+    }
+
+    // Load reference Veo text alpha maps (68x30 and 99x43) — with background correction
+    if (embedded::veo_text_small_png_size > 0) {
+        std::vector<unsigned char> buf(
+            embedded::veo_text_small_png, embedded::veo_text_small_png + embedded::veo_text_small_png_size);
+        cv::Mat bg = cv::imdecode(buf, cv::IMREAD_COLOR);
+        if (!bg.empty()) {
+            alpha_map_veo_text_small_ = correct_alpha_for_background(calculate_alpha_map(bg), bg);
+        }
+    }
+    if (embedded::veo_text_large_png_size > 0) {
+        std::vector<unsigned char> buf(
+            embedded::veo_text_large_png, embedded::veo_text_large_png + embedded::veo_text_large_png_size);
+        cv::Mat bg = cv::imdecode(buf, cv::IMREAD_COLOR);
+        if (!bg.empty()) {
+            alpha_map_veo_text_large_ = correct_alpha_for_background(calculate_alpha_map(bg), bg);
+        }
+    }
+
+    spdlog::debug("Alpha maps initialized: small {}x{}, large {}x{}, veo_text {}x{}, "
+                  "v2_diamond_36 {}x{}, v2_diamond_small {}x{}, v2_diamond_large {}x{}, "
+                  "veo_text_ref_small {}x{}, veo_text_ref_large {}x{}",
                   alpha_map_small_.cols, alpha_map_small_.rows,
-                  alpha_map_large_.cols, alpha_map_large_.rows);
+                  alpha_map_large_.cols, alpha_map_large_.rows,
+                  alpha_map_veo_text_.cols, alpha_map_veo_text_.rows,
+                  alpha_map_v2_diamond_36_.cols, alpha_map_v2_diamond_36_.rows,
+                  alpha_map_v2_diamond_small_.cols, alpha_map_v2_diamond_small_.rows,
+                  alpha_map_v2_diamond_large_.cols, alpha_map_v2_diamond_large_.rows,
+                  alpha_map_veo_text_small_.cols, alpha_map_veo_text_small_.rows,
+                  alpha_map_veo_text_large_.cols, alpha_map_veo_text_large_.rows);
 }
 
 DetectionResult WatermarkEngine::detect_watermark(
     const cv::Mat& image,
-    std::optional<WatermarkSize> force_size) const
+    std::optional<WatermarkSize> force_size,
+    std::optional<WatermarkPosition> force_position,
+    const cv::Mat* custom_alpha) const
 {
-    return detector_->detect(image, force_size);
+    return detector_->detect(image, force_size, force_position, custom_alpha);
 }
 
 void WatermarkEngine::remove_watermark(cv::Mat& image,
@@ -90,7 +204,9 @@ void WatermarkEngine::remove_watermark(cv::Mat& image,
 
 void WatermarkEngine::remove_watermark_detected(
     cv::Mat& image,
-    const DetectionResult& detection)
+    const DetectionResult& detection,
+    float inpaint_strength,
+    const cv::Mat* custom_alpha)
 {
     if (image.empty()) return;
 
@@ -100,7 +216,7 @@ void WatermarkEngine::remove_watermark_detected(
         cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
     }
 
-    const cv::Mat& alpha_map = get_alpha_map(detection.size);
+    const cv::Mat& alpha_map = custom_alpha ? *custom_alpha : get_alpha_map(detection.size);
     cv::Point pos(detection.region.x, detection.region.y);
 
     spdlog::debug("Removing detected watermark at ({}, {}) conf={:.2f}",
@@ -109,15 +225,37 @@ void WatermarkEngine::remove_watermark_detected(
     remove_watermark_alpha_blend(image, alpha_map, pos, logo_value_);
 
     // Inpaint residuals
-    inpaint_residual(image, detection.region);
+    InpaintConfig icfg;
+    icfg.strength = inpaint_strength;
+    inpaint_residual(image, detection.region, icfg, custom_alpha);
+}
+
+void WatermarkEngine::remove_watermark_alpha_only(
+    cv::Mat& image,
+    const DetectionResult& detection,
+    const cv::Mat* custom_alpha)
+{
+    if (image.empty()) return;
+
+    if (image.channels() == 4) {
+        cv::cvtColor(image, image, cv::COLOR_BGRA2BGR);
+    } else if (image.channels() == 1) {
+        cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
+    }
+
+    const cv::Mat& alpha_map = custom_alpha ? *custom_alpha : get_alpha_map(detection.size);
+    cv::Point pos(detection.region.x, detection.region.y);
+
+    remove_watermark_alpha_blend(image, alpha_map, pos, logo_value_);
 }
 
 void WatermarkEngine::inpaint_residual(
     cv::Mat& image,
     const cv::Rect& region,
-    const InpaintConfig& config) const
+    const InpaintConfig& config,
+    const cv::Mat* custom_alpha) const
 {
-    const cv::Mat& alpha_map = get_alpha_map(
+    const cv::Mat& alpha_map = custom_alpha ? *custom_alpha : get_alpha_map(
         (region.width <= 48 && region.height <= 48)
             ? WatermarkSize::Small : WatermarkSize::Large);
 
