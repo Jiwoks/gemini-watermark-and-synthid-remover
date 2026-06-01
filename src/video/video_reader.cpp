@@ -162,6 +162,7 @@ bool VideoReader::decode_next_frame(cv::Mat& out) {
 
         ret = avcodec_receive_frame(codec_ctx_, frame_);
         if (ret == 0) {
+            last_pts_ = frame_->pts;
             convert_to_bgr(frame_, out);
             av_frame_unref(frame_);
             return true;
@@ -256,6 +257,7 @@ bool VideoReader::seek(int64_t frame_index) {
     }
 
     eof_ = false;
+    last_pts_ = INT64_MIN;
     return true;
 }
 
@@ -278,6 +280,7 @@ void VideoReader::close() {
     }
 
     video_stream_idx_ = -1;
+    last_pts_ = INT64_MIN;
     frame_count_ = 0;
     fps_ = 0.0;
     width_ = 0;

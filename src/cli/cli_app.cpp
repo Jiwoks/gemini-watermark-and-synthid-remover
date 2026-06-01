@@ -242,6 +242,8 @@ static int process_video(const CliOptions& opts) {
 
     config.force = opts.force;
     config.inpaint_strength = opts.inpaint_strength;
+    config.scenes = opts.scenes;
+    config.scene_threshold = opts.scene_threshold;
 
     EncodeOptions encode;
     encode.codec = opts.video_codec;
@@ -366,6 +368,11 @@ int run_cli(int argc, char* argv[]) {
         ->check(CLI::Range(0, 51));
     video_cmd->add_option("--preset", opts.video_preset, "Encode preset");
     video_cmd->add_option("--codec", opts.video_codec, "Video codec");
+    video_cmd->add_flag("--scenes", opts.scenes,
+                         "Enable scene detection for multi-scene videos");
+    video_cmd->add_option("--scene-threshold", opts.scene_threshold,
+                           "Scene cut sensitivity 0.0-1.0 (default: 0.4)")
+        ->check(CLI::Range(0.0, 1.0));
     video_cmd->add_option("--inpaint-strength", opts.inpaint_strength,
                            "Inpaint strength 0.0-1.0")
         ->check(CLI::Range(0.0f, 1.0f));

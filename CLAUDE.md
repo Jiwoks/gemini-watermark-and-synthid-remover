@@ -65,6 +65,15 @@ Both operate in the frequency domain via `FftContext` (FFTW3 wrapper with plan c
 - Audio passthrough via fresh input context with timestamp rescaling
 - Audio streams created before MP4 header write (valid moov atom)
 
+### Scene Detection (opt-in via `--scenes`)
+
+`SceneDetector` (video/scene_detector) — Bhattacharyya histogram distance:
+
+- Two-pass: Pass 1 scans for scene boundaries + per-scene watermark detection; Pass 2 processes frames
+- SceneDetector owns its own VideoReader (main reader stays pristine)
+- Per-scene: only watermarked scenes get removal; non-watermarked scenes pass through unchanged
+- `detect_in_shot()` extended with optional `range_start`/`range_end`/`max_samples` params
+
 ### CLI
 
 CLI11 subcommands in src/cli/: `remove` (default), `visible`, `synthid`, `detect`, `video`, `build-codebook`. Directory inputs to remove/visible/synthid trigger batch mode (sequential, outputs to `cleaned/` subdirectory).

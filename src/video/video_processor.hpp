@@ -15,6 +15,8 @@ struct VideoWatermarkConfig {
     VideoVariant variant = VideoVariant::Auto;
     bool force = false;
     float inpaint_strength = 0.85f;
+    bool scenes = false;
+    double scene_threshold = 0.4;
 };
 
 struct VideoResult {
@@ -50,7 +52,10 @@ private:
 
     ShotDetection detect_in_shot(class VideoReader& reader,
                                  class WatermarkEngine& engine,
-                                 const VideoWatermarkConfig& config);
+                                 const VideoWatermarkConfig& config,
+                                 int64_t range_start = -1,
+                                 int64_t range_end = -1,
+                                 int max_samples = kShotSampleCount);
 
     WatermarkPosition resolve_geometry(
         const VideoWatermarkConfig& config, int width, int height) const;

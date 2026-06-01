@@ -23,6 +23,7 @@ set(SOURCES
     src/video/video_reader.cpp
     src/video/video_writer.cpp
     src/video/video_processor.cpp
+    src/video/scene_detector.cpp
 )
 
 # Executable

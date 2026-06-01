@@ -82,6 +82,8 @@ wmr remove input_dir/ -o output_dir/ --recursive
 | `--codec` | video | Video codec (default libx264) |
 | `--legacy` | video | Use Veo legacy text profile |
 | `--variant` | video | Force geometry: 720p-1, 720p-2, 1080p |
+| `--scenes` | video | Enable scene detection for multi-scene videos |
+| `--scene-threshold` | video | Scene cut sensitivity 0.0-1.0 (default 0.4) |
 | `-r, --recursive` | remove | Process directories recursively |
 | `-v, --verbose` | all | Verbose output |
 | `-V, --version` | all | Show version |
@@ -112,6 +114,7 @@ src/
 │   ├── video_reader.*      # FFmpeg demux+decode with seeking
 │   ├── video_writer.*      # FFmpeg encode (libx264, audio passthrough)
 │   └── video_processor.*   # Frame-by-frame processing with shot detection
+│   └── scene_detector.*    # Bhattacharyya histogram scene boundary detection
 ├── cli/
 │   ├── cli_app.*           # CLI11 subcommands and argument parsing
 │   └── batch_processor.*   # Directory batch processing
@@ -131,6 +134,7 @@ tests/
 - [x] **Phase 4** — SynthID detection + codebook builder (4-method Bayesian detector)
 - [x] **Phase 5** — Unified CLI + test suite (CLI11 subcommands, batch processing, Catch2 tests)
 - [x] **Phase 6** — Video watermark removal + CLI polish (FFmpeg pipeline, shot-level detection)
+- [x] **Phase 7** — Scene detection and splitting (Bhattacharyya histogram, per-scene watermark detection)
 
 ## How It Works
 
@@ -167,6 +171,10 @@ Video processing uses pure reverse alpha blending — the same lossless method a
 5. **Audio passthrough** — copies audio streams without re-encoding
 
 Supports both Gemini (diamond) and Veo (text) video watermarks via `--legacy` flag.
+
+For multi-scene videos, use `--scenes` to enable scene detection:
+- Pass 1: Detect scene boundaries using Bhattacharyya histogram distance, then run per-scene watermark detection
+- Pass 2: Remove watermarks only from watermarked scenes; non-watermarked scenes pass through unchanged
 
 ### SynthID Removal
 

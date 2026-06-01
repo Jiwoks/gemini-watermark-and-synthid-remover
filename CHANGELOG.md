@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.1.0] - 2026-06-01
+
+### Phase 7: Scene Detection and Splitting — COMPLETE
+
+#### Added
+- `SceneDetector` class (`src/video/scene_detector.hpp/cpp`) — Bhattacharyya histogram distance scene boundary detection:
+  - Downsamples frames to longest-side 320px, converts to grayscale
+  - 64-bin histogram comparison with `cv::compareHist(HISTCMP_BHATTACHARYYA)`
+  - Configurable threshold (default 0.4) and minimum scene length (15 frames)
+  - Short scene merging into predecessor
+  - Owns its own `VideoReader` — main reader stays pristine for processing
+- `--scenes` flag on `video` subcommand — enables two-pass scene-aware processing (opt-in)
+- `--scene-threshold` option — scene cut sensitivity 0.0-1.0 (default 0.4)
+- Per-scene watermark detection: each scene independently checked for watermarks
+- Non-watermarked scenes pass through unchanged (no removal artifacts)
+- `detect_in_shot()` extended with optional `range_start`/`range_end`/`max_samples` params (defaults = current behavior)
+
 ## [1.0.0] - 2026-05-31
 
 ### Phase 6: Video Watermark Removal + CLI Polish — COMPLETE

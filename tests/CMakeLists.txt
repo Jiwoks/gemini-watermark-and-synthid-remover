@@ -22,6 +22,7 @@ set(LIB_SOURCES
     ${CMAKE_SOURCE_DIR}/src/synthid/spectral_codebook.cpp
     ${CMAKE_SOURCE_DIR}/src/synthid/codebook_subtractor.cpp
     ${CMAKE_SOURCE_DIR}/src/synthid/codebook_builder.cpp
+    ${CMAKE_SOURCE_DIR}/src/video/scene_detector.cpp
 )
 
 add_executable(wmr_tests ${TEST_SOURCES} ${LIB_SOURCES})

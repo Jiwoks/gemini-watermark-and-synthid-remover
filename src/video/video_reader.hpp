@@ -34,6 +34,7 @@ public:
     int height() const { return height_; }
     AVFormatContext* format_context() const { return fmt_ctx_; }
     int video_stream_index() const { return video_stream_idx_; }
+    int64_t last_pts() const { return last_pts_; }
 
 private:
     bool decode_next_frame(cv::Mat& out);
@@ -50,6 +51,7 @@ private:
     int width_ = 0;
     int height_ = 0;
     bool eof_ = false;
+    int64_t last_pts_ = INT64_MIN;
 };
 
 } // namespace wmr

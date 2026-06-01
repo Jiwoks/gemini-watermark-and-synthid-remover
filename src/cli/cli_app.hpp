@@ -31,6 +31,8 @@ struct CliOptions {
     bool phase_adaptive = false;
     bool legacy_profile = false;
     std::string video_variant_str;
+    bool scenes = false;
+    double scene_threshold = 0.4;
     int video_crf = 14;
     std::string video_preset = "slow";
     std::string video_codec = "libx264";
