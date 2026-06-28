@@ -50,3 +50,23 @@ target_link_libraries(wmr_tests PRIVATE
 include(CTest)
 include(Catch)
 catch_discover_tests(wmr_tests)
+
+# AI denoise (FDnCNN via NCNN/Vulkan) — mirrors the main CMakeLists block.
+# target_sources is used because wmr_tests was already created above; mutating
+# the LIB_SOURCES/TEST_SOURCES lists at this point would have no effect.
+if(WMR_BUILD_AI_DENOISE)
+    target_sources(wmr_tests PRIVATE
+        ${CMAKE_SOURCE_DIR}/src/core/ai_denoise.cpp
+        ${CMAKE_SOURCE_DIR}/src/core/ai_denoise_model.cpp
+        unit/ai_denoise_test.cpp
+    )
+
+    if(TARGET volk::volk)
+        set(WMR_VOLK_TARGET volk::volk)
+    else()
+        set(WMR_VOLK_TARGET volk)
+    endif()
+
+    target_link_libraries(wmr_tests PRIVATE ncnn ${WMR_VOLK_TARGET})
+    target_compile_definitions(wmr_tests PRIVATE WMR_AI_DENOISE=1)
+endif()

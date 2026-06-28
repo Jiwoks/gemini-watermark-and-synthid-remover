@@ -138,6 +138,49 @@ if(CMAKE_BUILD_TYPE STREQUAL "Release")
     endif()
 endif()
 
+# AI denoise (FDnCNN via NCNN/Vulkan) — opt-in. OFF by default keeps the lean
+# default build volk/NCNN-free. Runs BEFORE the tests subdirectory so the volk
+# imported target exists when tests/CMakeLists.txt's mirror block executes.
+option(WMR_BUILD_AI_DENOISE "Build FDnCNN AI denoise (NCNN/Vulkan)" OFF)
+if(WMR_BUILD_AI_DENOISE)
+    # The NCNN submodule must be present.
+    if(NOT EXISTS "${CMAKE_SOURCE_DIR}/external/ncnn/ncnn-20260113-src/CMakeLists.txt")
+        message(FATAL_ERROR "NCNN submodule missing. Run: git submodule update --init --recursive")
+    endif()
+
+    # volk provides the Vulkan loader bindings used by the ncnn_shim.
+    find_package(volk CONFIG REQUIRED)
+
+    # Diagnostic-only: surfaces where CMake's FindVulkan resolved the loader.
+    find_package(Vulkan QUIET)
+
+    # Configure the in-tree NCNN as a static lib with Vulkan on. Cache knobs
+    # are set BEFORE add_subdirectory so NCNN picks them up.
+    set(NCNN_VULKAN ON CACHE BOOL "" FORCE)
+    set(NCNN_SHARED_LIB OFF CACHE BOOL "" FORCE)
+    set(NCNN_OPENMP OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_BENCHMARK OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(NCNN_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+    set(NCNN_ENABLE_LTO OFF CACHE BOOL "" FORCE)
+    add_subdirectory(${CMAKE_SOURCE_DIR}/external/ncnn/ncnn-20260113-src ncnn)
+
+    target_sources(${PROJECT_NAME} PRIVATE
+        src/core/ai_denoise.cpp
+        src/core/ai_denoise_model.cpp
+    )
+
+    if(TARGET volk::volk)
+        set(WMR_VOLK_TARGET volk::volk)
+    else()
+        set(WMR_VOLK_TARGET volk)
+    endif()
+
+    target_link_libraries(${PROJECT_NAME} PRIVATE ncnn ${WMR_VOLK_TARGET})
+    target_compile_definitions(${PROJECT_NAME} PRIVATE WMR_AI_DENOISE=1)
+endif()
+
 # Tests
 option(WMR_BUILD_TESTS "Build test suite" ON)
 if(WMR_BUILD_TESTS)

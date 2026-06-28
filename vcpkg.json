@@ -10,5 +10,13 @@
     "fftw3",
     "catch2",
     { "name": "ffmpeg", "features": ["x264"] }
-  ]
+  ],
+  "features": {
+    "ai-denoise": {
+      "description": "FDnCNN AI denoise (NCNN/Vulkan) for watermark residual cleanup. Adds volk for the Vulkan loader; requires the NCNN submodule.",
+      "dependencies": [
+        "volk"
+      ]
+    }
+  }
 }

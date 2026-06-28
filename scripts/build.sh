@@ -16,13 +16,25 @@
 #   BUILD_TYPE=Debug scripts/build.sh
 #   RUN_TESTS=0 scripts/build.sh     # skip tests
 #   BUILD_DIR=build-alt scripts/build.sh
+#   WMR_AI_DENOISE=1 scripts/build.sh  # FDnCNN AI denoise (NCNN/Vulkan)
 set -euo pipefail
 
 BUILD_TYPE="${BUILD_TYPE:-Release}"
 RUN_TESTS="${RUN_TESTS:-1}"
 BUILD_DIR="${BUILD_DIR:-build}"
+# When WMR_AI_DENOISE=1, build the NCNN/Vulkan FDnCNN denoiser. Adds the
+# vulkan/volk Homebrew deps, inits the NCNN submodule, and enables
+# -DWMR_BUILD_AI_DENOISE=ON. Unset/0 keeps the lean default build unchanged.
+AI_DENOISE="${WMR_AI_DENOISE:-0}"
 
 DEPS=(opencv fftw ffmpeg catch2 fmt spdlog cli11)
+
+# AI-denoise mode: pull in the Vulkan toolchain + init the NCNN submodule.
+if [ "${AI_DENOISE}" = "1" ]; then
+  DEPS+=(vulkan-volk vulkan-loader vulkan-headers molten-vk)
+  echo ">> AI denoise mode: initialising NCNN submodule"
+  git submodule update --init --recursive
+fi
 
 # 1. Verify Homebrew and required formulas.
 if ! command -v brew >/dev/null 2>&1; then
@@ -73,7 +85,8 @@ cmake -S . -B "${BUILD_DIR}" -G Ninja \
   -DOpenCV_DIR="$(brew --prefix opencv)/lib/cmake/opencv4" \
   -DFFTW3f_DIR="$(brew --prefix fftw)/lib/cmake/fftw3" \
   -DFFMPEG_ROOT="$(brew --prefix ffmpeg)" \
-  -DWMR_BUILD_TESTS=ON
+  -DWMR_BUILD_TESTS=ON \
+  $([ "${AI_DENOISE}" = "1" ] && echo "-DWMR_BUILD_AI_DENOISE=ON")
 
 # 4. Build.
 cmake --build "${BUILD_DIR}" --parallel
