@@ -39,6 +39,13 @@ void print_header(std::ostream& os) {
 
 namespace wmr {
 
+std::pair<std::optional<WatermarkVariant>, bool>
+resolve_still_variant(const CliOptions& opts) {
+    if (opts.still_legacy)    return {WatermarkVariant::V1, false};
+    if (opts.still_no_legacy) return {WatermarkVariant::V2, false};
+    return {std::nullopt, true};  // default: V2 with auto V2→V1 fallback
+}
+
 static int process_detect(const CliOptions& opts) {
     cv::Mat image = cv::imread(opts.input_path, cv::IMREAD_COLOR);
     if (image.empty()) {
@@ -48,20 +55,28 @@ static int process_detect(const CliOptions& opts) {
 
     spdlog::info("Image: {}x{}", image.cols, image.rows);
 
-    // Visible watermark detection
+    // Visible watermark detection — report the requested profile(s).
+    // Default (no flag): report both V2 (current) and V1 (legacy).
     {
         WatermarkEngine engine;
-        auto result = engine.detect_watermark(image);
-        if (result.detected) {
-            spdlog::info("[VISIBLE] DETECTED (confidence: {:.1f}%)",
-                         result.confidence * 100.0f);
-            spdlog::info("  Region: ({}, {}) {}x{}",
-                         result.region.x, result.region.y,
-                         result.region.width, result.region.height);
-        } else {
-            spdlog::info("[VISIBLE] not detected ({:.1f}%)",
-                         result.confidence * 100.0f);
-        }
+        auto report = [&](WatermarkVariant v) {
+            WatermarkSize sz = get_watermark_size(image.cols, image.rows);
+            bool snap = (v == WatermarkVariant::V2 && sz == WatermarkSize::Small);
+            auto result = engine.detect_watermark(image, std::nullopt, std::nullopt,
+                                                  nullptr, v, snap);
+            const char* tag = (v == WatermarkVariant::V1) ? "[VISIBLE V1]" : "[VISIBLE V2]";
+            if (result.detected) {
+                spdlog::info("{} DETECTED (confidence: {:.1f}%)", tag,
+                             result.confidence * 100.0f);
+                spdlog::info("  Region: ({}, {}) {}x{}", result.region.x, result.region.y,
+                             result.region.width, result.region.height);
+            } else {
+                spdlog::info("{} not detected ({:.1f}%)", tag, result.confidence * 100.0f);
+            }
+        };
+        if (opts.still_legacy)         report(WatermarkVariant::V1);
+        else if (opts.still_no_legacy) report(WatermarkVariant::V2);
+        else { report(WatermarkVariant::V2); report(WatermarkVariant::V1); }
     }
 
     // SynthID detection
@@ -112,12 +127,38 @@ static int process_single_image(const CliOptions& opts) {
         if (opts.force_small) force_size = WatermarkSize::Small;
         else if (opts.force_large) force_size = WatermarkSize::Large;
 
-        if (!opts.force) {
-            auto detection = engine.detect_watermark(image, force_size);
-            if (detection.detected) {
-                spdlog::info("Visible watermark detected ({:.1f}%), removing...",
-                             detection.confidence * 100.0f);
-                engine.remove_watermark_detected(image, detection);
+        auto [force_variant, try_fallback] = resolve_still_variant(opts);
+
+        // Detect→remove for one variant; true if a watermark was found and removed.
+        auto try_remove = [&](WatermarkVariant v) -> bool {
+            bool snap = (v == WatermarkVariant::V2 &&
+                         force_size.value_or(get_watermark_size(image.cols, image.rows))
+                             == WatermarkSize::Small);
+            auto detection = engine.detect_watermark(image, force_size, std::nullopt,
+                                                     nullptr, v, snap);
+            if (!detection.detected) return false;
+            spdlog::info("Visible watermark detected ({:.1f}%, {}), removing...",
+                         detection.confidence * 100.0f,
+                         v == WatermarkVariant::V1 ? "V1" : "V2");
+            const cv::Mat& alpha = engine.get_still_alpha(detection.size, v);
+            engine.remove_watermark_detected(image, detection, opts.inpaint_strength, &alpha);
+            return true;
+        };
+
+        if (opts.force) {
+            WatermarkVariant active = force_variant.value_or(WatermarkVariant::V2);
+            spdlog::info("Force mode: removing visible watermark ({})",
+                         active == WatermarkVariant::V1 ? "V1" : "V2");
+            engine.remove_watermark(image, force_size, force_variant);
+            did_work = true;
+        } else {
+            WatermarkVariant primary = force_variant.value_or(WatermarkVariant::V2);
+            bool removed = try_remove(primary);
+            if (!removed && try_fallback && primary == WatermarkVariant::V2) {
+                spdlog::info("V2 profile not detected — retrying with legacy V1");
+                removed = try_remove(WatermarkVariant::V1);
+            }
+            if (removed) {
                 did_work = true;
             } else if (opts.mode == CliMode::AutoRemove) {
                 spdlog::debug("No visible watermark detected");
@@ -125,10 +166,6 @@ static int process_single_image(const CliOptions& opts) {
                 spdlog::warn("No visible watermark detected. Use --force to remove anyway.");
                 return 2;
             }
-        } else {
-            spdlog::info("Force mode: removing visible watermark");
-            engine.remove_watermark(image, force_size);
-            did_work = true;
         }
     }
 
@@ -305,6 +342,10 @@ int run_cli(int argc, char* argv[]) {
     remove_cmd->add_flag("-f,--force", opts.force, "Skip detection");
     remove_cmd->add_flag("--force-small", opts.force_small, "Force 48x48 watermark");
     remove_cmd->add_flag("--force-large", opts.force_large, "Force 96x96 watermark");
+    remove_cmd->add_flag("--legacy", opts.still_legacy,
+                         "Use legacy Gemini (pre-3.5) V1 watermark profile");
+    remove_cmd->add_flag("--no-legacy", opts.still_no_legacy,
+                         "Pin current (Gemini 3.5+) V2 profile; disable auto fallback");
     remove_cmd->add_flag("--synthid", opts.synthid, "Also remove SynthID");
     remove_cmd->add_option("--codebook", opts.codebook_path, "Spectral codebook path (.wcb)");
     remove_cmd->add_flag("--codebook-free", opts.codebook_free,
@@ -325,6 +366,10 @@ int run_cli(int argc, char* argv[]) {
         ->required()
         ->check(CLI::ExistingFile);
     detect_cmd->add_option("--codebook", opts.codebook_path, "Spectral codebook for SynthID detection");
+    detect_cmd->add_flag("--legacy", opts.still_legacy,
+                         "Report only the legacy Gemini (pre-3.5) V1 profile");
+    detect_cmd->add_flag("--no-legacy", opts.still_no_legacy,
+                         "Report only the current (Gemini 3.5+) V2 profile");
     add_common(detect_cmd);
 
     // --- visible ---
@@ -335,6 +380,10 @@ int run_cli(int argc, char* argv[]) {
     visible_cmd->add_flag("-f,--force", opts.force, "Skip detection");
     visible_cmd->add_flag("--force-small", opts.force_small, "Force 48x48");
     visible_cmd->add_flag("--force-large", opts.force_large, "Force 96x96");
+    visible_cmd->add_flag("--legacy", opts.still_legacy,
+                          "Use legacy Gemini (pre-3.5) V1 watermark profile");
+    visible_cmd->add_flag("--no-legacy", opts.still_no_legacy,
+                          "Pin current (Gemini 3.5+) V2 profile; disable auto fallback");
     visible_cmd->add_option("--inpaint-strength", opts.inpaint_strength,
                             "Inpaint strength 0.0-1.0")
         ->check(CLI::Range(0.0f, 1.0f));
@@ -418,6 +467,10 @@ int run_cli(int argc, char* argv[]) {
     if (opts.force_small && opts.force_large) {
         spdlog::error("Cannot use both --force-small and --force-large");
         return 1;
+    }
+    if (opts.still_legacy && opts.still_no_legacy) {
+        spdlog::error("Cannot use both --legacy and --no-legacy");
+        return 2;
     }
 
     // Determine mode from subcommand

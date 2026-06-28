@@ -1,6 +1,8 @@
 #pragma once
 
 #include <opencv2/core.hpp>
+#include <algorithm>
+#include <cmath>
 #include <string>
 
 namespace wmr {
@@ -14,6 +16,14 @@ enum class [[nodiscard]] ResultCode {
 };
 
 enum class WatermarkSize { Small, Large };
+
+// Still-image watermark profile generation.
+// V1 = legacy Gemini (pre-3.5); V2 = Gemini 3.5+ (current). Kept separate from
+// VideoVariant (which encodes resolution tiers) — see CLAUDE.md.
+enum class WatermarkVariant {
+    V1,   // legacy profile
+    V2,   // current profile (Gemini 3.5+)
+};
 
 struct ProcessResult {
     bool success = false;
@@ -47,12 +57,43 @@ struct WatermarkPosition {
     }
 };
 
-inline WatermarkPosition get_watermark_config(int width, int height) {
-    auto size = get_watermark_size(width, height);
-    if (size == WatermarkSize::Large) {
-        return {64, 64, 96};
+// V2 small position is aspect-aware: small Gemini outputs are 1024-class on the
+// long side and inherit per-axis rounding from the source aspect ratio, so a
+// single fixed margin does not fit every aspect. Ported verbatim from upstream
+// allenk/GeminiWatermarkTool v0.3.1.
+inline WatermarkPosition v2_small_config_from_dims(int width, int height) {
+    const int long_side = std::max(width, height);
+    const int short_side = std::min(width, height);
+    // Map short side back to the canonical large width. Thresholds bisect the
+    // observed canonical heights (540, 559, 572) for a 1024-class small output.
+    double source_long_dim;
+    if (short_side >= 566)      source_long_dim = 2752.0;
+    else if (short_side >= 550) source_long_dim = 2816.0;
+    else                        source_long_dim = 2848.0;
+    const double scale = static_cast<double>(long_side) / source_long_dim;
+    const int margin = static_cast<int>(std::round(192.0 * scale));
+    return {margin, margin, 36};  // {margin_right, margin_bottom, logo_size}
+}
+
+inline WatermarkPosition get_watermark_config(int width, int height,
+                                              WatermarkVariant variant) {
+    const bool is_large = (width > 1024 && height > 1024);
+    if (variant == WatermarkVariant::V1) {
+        return is_large ? WatermarkPosition{64, 64, 96}
+                        : WatermarkPosition{32, 32, 48};
     }
-    return {32, 32, 48};
+    // V2 (current profile)
+    if (is_large) {
+        return {192, 192, 96};
+    }
+    return v2_small_config_from_dims(width, height);
+}
+
+// Backward-compatible overload: defaults to V1 so existing callers
+// (NccDetector's internal default-position path, the video path, and existing
+// tests) are unchanged. The V2 default is applied one level up, in WatermarkEngine.
+inline WatermarkPosition get_watermark_config(int width, int height) {
+    return get_watermark_config(width, height, WatermarkVariant::V1);
 }
 
 // Video-specific watermark geometry

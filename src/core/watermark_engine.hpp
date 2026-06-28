@@ -18,7 +18,15 @@ public:
     ~WatermarkEngine();
 
     void remove_watermark(cv::Mat& image,
-                          std::optional<WatermarkSize> force_size = std::nullopt);
+                          std::optional<WatermarkSize> force_size,
+                          std::optional<WatermarkVariant> force_variant);
+
+    // Legacy 2-arg path: variant resolved by the 3-arg overload
+    // (has_v2_ ? V2 : V1). Kept for CLI --force backward compatibility.
+    void remove_watermark(cv::Mat& image,
+                          std::optional<WatermarkSize> force_size = std::nullopt) {
+        remove_watermark(image, force_size, std::nullopt);
+    }
 
     void remove_watermark_detected(cv::Mat& image,
                                    const DetectionResult& detection,
@@ -30,11 +38,27 @@ public:
                                      const DetectionResult& detection,
                                      const cv::Mat* custom_alpha = nullptr);
 
+    // Variant-aware still-image detection. The 6-arg form resolves the profile
+    // (default V2 when V2 assets are loaded, else V1). The inline 4-arg overload
+    // preserves legacy V1 behavior for existing callers (video path, tests).
+    DetectionResult detect_watermark(
+        const cv::Mat& image,
+        std::optional<WatermarkSize> force_size,
+        std::optional<WatermarkPosition> force_position,
+        const cv::Mat* custom_alpha,
+        std::optional<WatermarkVariant> force_variant,
+        bool enable_snap) const;
+
     DetectionResult detect_watermark(
         const cv::Mat& image,
         std::optional<WatermarkSize> force_size = std::nullopt,
         std::optional<WatermarkPosition> force_position = std::nullopt,
-        const cv::Mat* custom_alpha = nullptr) const;
+        const cv::Mat* custom_alpha = nullptr) const
+    {
+        // Legacy 4-arg path: V1, no snap. Used by video + existing tests.
+        return detect_watermark(image, force_size, force_position, custom_alpha,
+                                WatermarkVariant::V1, /*enable_snap=*/false);
+    }
 
     void inpaint_residual(cv::Mat& image,
                           const cv::Rect& region,
@@ -52,6 +76,14 @@ public:
     const cv::Mat& get_veo_text_alpha_small() const { return alpha_map_veo_text_small_; }
     const cv::Mat& get_veo_text_alpha_large() const { return alpha_map_veo_text_large_; }
 
+    // Resolve the still-image alpha for a variant: the V2 map when available,
+    // else the V1 map. Public so the CLI detect→remove flow can forward it as
+    // custom_alpha to the removers.
+    const cv::Mat& get_still_alpha(WatermarkSize size, WatermarkVariant v) const {
+        return (v == WatermarkVariant::V2 && has_v2_) ? get_v2_alpha(size)
+                                                       : get_alpha_map(size);
+    }
+
 private:
     cv::Mat alpha_map_small_;
     cv::Mat alpha_map_large_;
@@ -62,9 +94,11 @@ private:
     cv::Mat alpha_map_veo_text_small_;
     cv::Mat alpha_map_veo_text_large_;
     float logo_value_ = 255.0f;
+    bool has_v2_ = false;  // V2 (Gemini 3.5) alpha maps decoded
 
     std::unique_ptr<NccDetector> detector_;
 
+    const cv::Mat& get_v2_alpha(WatermarkSize size) const;
     cv::Mat create_interpolated_alpha(int width, int height, WatermarkSize size) const;
     void init_alpha_maps();
 };

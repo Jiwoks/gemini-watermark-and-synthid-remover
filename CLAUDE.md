@@ -89,7 +89,7 @@ CLI11 subcommands in src/cli/: `remove` (default), `visible`, `synthid`, `detect
 ## Key Conventions
 
 - Alpha maps are constexpr PNG byte arrays decoded at runtime via `cv::imdecode`
-- Watermark size is deterministic from image dimensions: 48×48 if either dim ≤ 1024, else 96×96, always bottom-right
+- Still-image watermark geometry is profile-aware (`WatermarkVariant::V1`/`V2`, default V2 with auto V2→V1 fallback; `--legacy` pins V1): V1 (legacy, pre-3.5) → 48×48 if either dim ≤ 1024 else 96×96, margins {32,32}/{64,64}; V2 (Gemini 3.5+) → large 96×96 @192px, small 36×36 with aspect-aware margin (`v2_small_config_from_dims`) + ±3px NCC snap (trusted iff spatial NCC ≥ 0.60). `WatermarkSize` (Small/Large) is a size class, not a pixel count (V2 Small = 36px alpha). Still `WatermarkVariant` is distinct from video `VideoVariant`.
 - Video encoding defaults: libx264, CRF 14, High profile, slow preset
 - Test executable re-compiles library sources (doesn't link main binary) — add new sources to both CMakeLists.txt and tests/CMakeLists.txt
 

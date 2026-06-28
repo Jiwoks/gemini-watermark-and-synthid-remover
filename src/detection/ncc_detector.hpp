@@ -16,7 +16,8 @@ public:
         const cv::Mat& image,
         std::optional<WatermarkSize> force_size = std::nullopt,
         std::optional<WatermarkPosition> force_position = std::nullopt,
-        const cv::Mat* custom_alpha = nullptr) const;
+        const cv::Mat* custom_alpha = nullptr,
+        bool enable_snap = false) const;
 
     const cv::Mat& get_veo_text_alpha() const { return alpha_map_veo_text_; }
 

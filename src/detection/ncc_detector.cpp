@@ -20,7 +20,8 @@ DetectionResult NccDetector::detect(
     const cv::Mat& image,
     std::optional<WatermarkSize> force_size,
     std::optional<WatermarkPosition> force_position,
-    const cv::Mat* custom_alpha) const
+    const cv::Mat* custom_alpha,
+    bool enable_snap) const
 {
     DetectionResult result;
 
@@ -48,11 +49,15 @@ DetectionResult NccDetector::detect(
     result.size = size;
     result.region = cv::Rect(pos.x, pos.y, alpha_map.cols, alpha_map.rows);
 
-    // Clamp ROI to image bounds
-    const int x1 = std::max(0, pos.x);
-    const int y1 = std::max(0, pos.y);
-    const int x2 = std::min(image.cols, pos.x + alpha_map.cols);
-    const int y2 = std::min(image.rows, pos.y + alpha_map.rows);
+    // Snap mode (V2 small): widen the ROI by snap_pad so the full alpha template
+    // can slide and absorb the ~1-3 px error in the aspect-aware position.
+    const int snap_pad = enable_snap ? 3 : 0;
+
+    // ROI clamped to image bounds (expanded by snap_pad when snapping)
+    const int x1 = std::max(0, pos.x - snap_pad);
+    const int y1 = std::max(0, pos.y - snap_pad);
+    const int x2 = std::min(image.cols, pos.x + alpha_map.cols + snap_pad);
+    const int y2 = std::min(image.rows, pos.y + alpha_map.rows + snap_pad);
 
     if (x1 >= x2 || y1 >= y2) {
         spdlog::debug("Detection: ROI out of bounds");
@@ -73,17 +78,32 @@ DetectionResult NccDetector::detect(
     cv::Mat gray_f;
     gray_region.convertTo(gray_f, CV_32F, 1.0 / 255.0);
 
-    // Corresponding alpha region
-    const cv::Rect alpha_roi(x1 - pos.x, y1 - pos.y, x2 - x1, y2 - y1);
-    const cv::Mat alpha_region = alpha_map(alpha_roi);
+    // Alpha region: when snapping, the FULL alpha template slides across the
+    // wider gray region; otherwise a clamped sub-rect aligned to pos.
+    cv::Mat alpha_region;
+    if (enable_snap) {
+        alpha_region = alpha_map;
+    } else {
+        const cv::Rect alpha_roi(x1 - pos.x, y1 - pos.y, x2 - x1, y2 - y1);
+        alpha_region = alpha_map(alpha_roi);
+    }
 
     // Stage 1: Spatial NCC
     cv::Mat spatial_match;
     cv::matchTemplate(gray_f, alpha_region, spatial_match, cv::TM_CCOEFF_NORMED);
 
     double spatial_score;
-    cv::minMaxLoc(spatial_match, nullptr, &spatial_score);
+    cv::Point match_loc;
+    cv::minMaxLoc(spatial_match, nullptr, &spatial_score, nullptr, &match_loc);
     result.spatial_score = static_cast<float>(spatial_score);
+
+    // Trust the snapped offset only when correlation is strong; busy backgrounds
+    // can otherwise pull the match toward content artefacts.
+    if (enable_snap && spatial_score >= 0.60) {
+        pos.x = x1 + match_loc.x;
+        pos.y = y1 + match_loc.y;
+        result.region = cv::Rect(pos.x, pos.y, alpha_map.cols, alpha_map.rows);
+    }
 
     // Circuit breaker
     constexpr double kSpatialThreshold = 0.25;

@@ -54,16 +54,31 @@ static int process_single(const fs::path& input, const CliOptions& opts) {
 
     // Visible watermark processing
     if (opts.mode == CliMode::AutoRemove || opts.mode == CliMode::VisibleOnly) {
-        if (!opts.force) {
-            auto detection = engine.detect_watermark(image);
-            if (detection.detected) {
-                engine.remove_watermark_detected(image, detection);
-            }
+        std::optional<WatermarkSize> force_size;
+        if (opts.force_small) force_size = WatermarkSize::Small;
+        else if (opts.force_large) force_size = WatermarkSize::Large;
+
+        auto [force_variant, try_fallback] = resolve_still_variant(opts);
+
+        auto try_remove = [&](WatermarkVariant v) -> bool {
+            bool snap = (v == WatermarkVariant::V2 &&
+                         force_size.value_or(get_watermark_size(image.cols, image.rows))
+                             == WatermarkSize::Small);
+            auto detection = engine.detect_watermark(image, force_size, std::nullopt,
+                                                     nullptr, v, snap);
+            if (!detection.detected) return false;
+            const cv::Mat& alpha = engine.get_still_alpha(detection.size, v);
+            engine.remove_watermark_detected(image, detection, opts.inpaint_strength, &alpha);
+            return true;
+        };
+
+        if (opts.force) {
+            engine.remove_watermark(image, force_size, force_variant);
         } else {
-            std::optional<WatermarkSize> force_size;
-            if (opts.force_small) force_size = WatermarkSize::Small;
-            else if (opts.force_large) force_size = WatermarkSize::Large;
-            engine.remove_watermark(image, force_size);
+            WatermarkVariant primary = force_variant.value_or(WatermarkVariant::V2);
+            if (!try_remove(primary) && try_fallback && primary == WatermarkVariant::V2) {
+                try_remove(WatermarkVariant::V1);
+            }
         }
     }
 

@@ -129,6 +129,8 @@ void WatermarkEngine::init_alpha_maps() {
         }
     }
 
+    has_v2_ = !alpha_map_v2_diamond_36_.empty() && !alpha_map_v2_diamond_large_.empty();
+
     // Load reference Veo text alpha maps (68x30 and 99x43) — with background correction
     if (embedded::veo_text_small_png_size > 0) {
         std::vector<unsigned char> buf(
@@ -164,13 +166,37 @@ DetectionResult WatermarkEngine::detect_watermark(
     const cv::Mat& image,
     std::optional<WatermarkSize> force_size,
     std::optional<WatermarkPosition> force_position,
-    const cv::Mat* custom_alpha) const
+    const cv::Mat* custom_alpha,
+    std::optional<WatermarkVariant> force_variant,
+    bool enable_snap) const
 {
-    return detector_->detect(image, force_size, force_position, custom_alpha);
+    const WatermarkVariant variant = force_variant.value_or(
+        has_v2_ ? WatermarkVariant::V2 : WatermarkVariant::V1);
+    const WatermarkSize size = force_size.value_or(
+        get_watermark_size(image.cols, image.rows));
+
+    // Resolve position from the variant unless the caller forced one (video).
+    WatermarkPosition pos_cfg = force_position.value_or(
+        get_watermark_config(image.cols, image.rows, variant));
+
+    // Select alpha: caller-supplied custom_alpha wins; else V1 or V2 map.
+    const cv::Mat* alpha = custom_alpha;
+    cv::Mat v2_buf;  // owning holder when we resolve a V2 map
+    if (!alpha) {
+        if (variant == WatermarkVariant::V2 && has_v2_) {
+            v2_buf = get_v2_alpha(size);
+            alpha = &v2_buf;
+        } else {
+            alpha = &get_alpha_map(size);
+        }
+    }
+
+    return detector_->detect(image, size, pos_cfg, alpha, enable_snap);
 }
 
 void WatermarkEngine::remove_watermark(cv::Mat& image,
-                                        std::optional<WatermarkSize> force_size) {
+                                        std::optional<WatermarkSize> force_size,
+                                        std::optional<WatermarkVariant> force_variant) {
     if (image.empty()) {
         throw std::runtime_error("Empty image provided");
     }
@@ -181,25 +207,26 @@ void WatermarkEngine::remove_watermark(cv::Mat& image,
         cv::cvtColor(image, image, cv::COLOR_GRAY2BGR);
     }
 
-    WatermarkSize size = force_size.value_or(
+    const WatermarkVariant variant = force_variant.value_or(
+        has_v2_ ? WatermarkVariant::V2 : WatermarkVariant::V1);
+    const WatermarkSize size = force_size.value_or(
         get_watermark_size(image.cols, image.rows));
 
-    auto config = get_watermark_config(image.cols, image.rows);
-    if (force_size.has_value()) {
-        if (*force_size == WatermarkSize::Small) {
-            config = {32, 32, 48};
-        } else {
-            config = {64, 64, 96};
-        }
-    }
+    // Detect first so the V2-small snap refinement locks the exact pixels the
+    // detector matched; removal then operates on the same region.
+    const bool do_snap = (variant == WatermarkVariant::V2 && size == WatermarkSize::Small);
+    const DetectionResult det = detect_watermark(
+        image, size, std::nullopt, /*custom_alpha=*/nullptr, variant, do_snap);
 
-    cv::Point pos = config.get_position(image.cols, image.rows);
-    const cv::Mat& alpha_map = get_alpha_map(size);
+    const cv::Mat& alpha = (variant == WatermarkVariant::V2 && has_v2_)
+                               ? get_v2_alpha(size) : get_alpha_map(size);
+    const cv::Point pos(det.region.x, det.region.y);
 
-    spdlog::debug("Removing watermark at ({}, {}) size {}",
-                  pos.x, pos.y, size == WatermarkSize::Small ? "48x48" : "96x96");
+    spdlog::debug("Removing watermark at ({},{}) {}x{} (variant {})",
+                  pos.x, pos.y, alpha.cols, alpha.rows,
+                  variant == WatermarkVariant::V1 ? "V1" : "V2");
 
-    remove_watermark_alpha_blend(image, alpha_map, pos, logo_value_);
+    remove_watermark_alpha_blend(image, alpha, pos, logo_value_);
 }
 
 void WatermarkEngine::remove_watermark_detected(
@@ -294,6 +321,11 @@ void WatermarkEngine::add_watermark(cv::Mat& image,
 
 const cv::Mat& WatermarkEngine::get_alpha_map(WatermarkSize size) const {
     return (size == WatermarkSize::Small) ? alpha_map_small_ : alpha_map_large_;
+}
+
+const cv::Mat& WatermarkEngine::get_v2_alpha(WatermarkSize size) const {
+    return (size == WatermarkSize::Small) ? alpha_map_v2_diamond_36_
+                                          : alpha_map_v2_diamond_large_;
 }
 
 cv::Mat WatermarkEngine::create_interpolated_alpha(int width, int height,

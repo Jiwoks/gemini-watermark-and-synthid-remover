@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [1.2.0] - 2026-06-27
+
+### Still-Image V2 (Gemini 3.5) Watermark Parity
+
+#### Added
+- `WatermarkVariant {V1, V2}` (`src/core/types.hpp`) — still-image profile generations, default V2. Separate from video `VideoVariant`.
+- `get_watermark_config(W,H,variant)` + `v2_small_config_from_dims` — V2 large {192,192,96}; V2 small 36×36 with aspect-aware margin (ported verbatim from upstream allenk/GeminiWatermarkTool v0.3.1).
+- V2-aware `WatermarkEngine::detect_watermark` (6-arg) / `remove_watermark` (3-arg) — default V2 with auto V2→V1 fallback on miss. The V2 alpha flows through the existing `custom_alpha` channel; `blend_modes` is unchanged.
+- ±3px NCC snap refinement for V2+Small in `NccDetector::detect` (trusted iff spatial NCC ≥ 0.60), via a new trailing `enable_snap` param.
+- `--legacy` / `--no-legacy` flags on `remove`, `visible`, `detect` (still subcommands) and batch. `--legacy` pins V1; `--no-legacy` pins V2 and disables fallback; both → exit 2. Video `--legacy` (Veo-text) is unchanged (CLI11-scoped per subcommand).
+- New `[v2]` ctest tag: synthesized Gemini 3.5 round-trip (≤1 LSB mean), V2 small + snap (36×36 region), and V1-legacy-default tests.
+
+#### Changed
+- Still-image default profile flipped V1 → V2 (with auto fallback). Legacy 4-arg `detect_watermark` / 2-arg `remove_watermark` inline overloads keep routing to V1, so the video pipeline and existing tests are provably unchanged.
+- Video pipeline, Veo, NotebookLM, SynthID — out of scope, unchanged.
+
+#### Build — robust macOS/Homebrew workflow (survives `brew upgrade`)
+- `scripts/build.sh`: self-healing build helper — verifies required Homebrew formulas, auto-wipes + reconfigures when a cached dependency path has vanished after an upgrade, configures against the stable `/opt/homebrew/opt/…` symlinks, then builds + tests.
+- `cmake/FindFFMPEG.cmake`: prefer `FFMPEG_ROOT` (stable opt symlink) over pkg-config's versioned Cellar realpath, so the cached FFmpeg path survives an upgrade.
+- `CMakePresets.json`: `mac-homebrew-Release`/`-Debug` presets (system libs, no vcpkg).
+- `CMakeLists.txt`: synthesize the `FFTW3::fftw3f` imported target from Homebrew's variable-only fftw3 config (no-op under vcpkg) so the test target links.
+- `tests/CMakeLists.txt`: exclude unused `scene_detector.cpp` from the test link (it pulled in unlinked FFmpeg via `VideoReader`).
+- Test suite needs Catch2 (`brew install catch2`); `scripts/build.sh` verifies deps.
+
 ## [1.1.0] - 2026-06-02
 
 ### Phase 7: Scene Detection and Splitting — COMPLETE
