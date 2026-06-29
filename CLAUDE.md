@@ -102,6 +102,7 @@ CLI11 subcommands in src/cli/: `remove` (default), `visible`, `synthid`, `detect
 - Still-image watermark geometry is profile-aware (`WatermarkVariant::V1`/`V2`, default V2 with auto V2→V1 fallback; `--legacy` pins V1): V1 (legacy, pre-3.5) → 48×48 if either dim ≤ 1024 else 96×96, margins {32,32}/{64,64}; V2 (Gemini 3.5+) → large 96×96 @192px, small 36×36 with aspect-aware margin (`v2_small_config_from_dims`) + ±3px NCC snap (trusted iff spatial NCC ≥ 0.60). `WatermarkSize` (Small/Large) is a size class, not a pixel count (V2 Small = 36px alpha). Still `WatermarkVariant` is distinct from video `VideoVariant`.
 - Video encoding defaults: libx264, CRF 14, High profile, slow preset
 - Test executable re-compiles library sources (doesn't link main binary) — add new sources to both CMakeLists.txt and tests/CMakeLists.txt
+- `wmr --version` is the `APP_VERSION` define (`=project(wmr VERSION …)`) baked at CMake **configure** time (cached as `CMAKE_PROJECT_VERSION`). Editing the version doesn't change `build/wmr` until a reconfigure — `cmake --build build` reconfigures automatically when `CMakeLists.txt` changed.
 
 ## Platform Quirks
 
@@ -109,3 +110,10 @@ CLI11 subcommands in src/cli/: `remove` (default), `visible`, `synthid`, `detect
 - FFmpeg found via custom `cmake/FindFFMPEG.cmake` (pkg-config primary, `FFMPEG_ROOT` fallback). Creates imported targets `FFMPEG::avformat` etc.
 - FFTW3 linked via variables in main build (`${FFTW3f_LIBRARIES}`) but via imported target in tests (`FFTW3::fftw3f`) — inconsistency inherited from vcpkg vs system lib resolution.
 - Linux links static libgcc/libstdc++; MSVC uses static CRT.
+- **Local build is DYNAMIC; CI is STATIC.** The Homebrew `build/wmr` links OpenCV/FFmpeg/fmt/spdlog dynamically (~10 MB); CI's vcpkg build is fully static (lean release binaries are ~29 MB single self-contained files — `otool -L` shows only system frameworks). Don't judge CI portability from the local binary — inspect the downloaded release binary (`gh release download`).
+- GitHub macOS runners use a paravirtualized Metal GPU (`AppleParavirtDevice`) that throws during MoltenVK `vkCreateInstance` (`newArgumentEncoderWithLayout:`). The GPU path can't run in CI — the `ai-denoise` job verifies CPU only (`VK_ICD_FILENAMES=/nonexistent`); verify GPU out-of-band on real Apple Silicon.
+
+## CI & Releases
+
+- `.github/workflows/release.yml` builds the 4 lean binaries + the `ai-denoise` job (macOS arm64 AI tarball); `release` (`needs: [build, ai-denoise]`) attaches all six on a `v*` tag. **Validate a changed job off-cycle via `workflow_dispatch` before tagging** — avoids tag-force-move churn on failure.
+- `gh run view --log` returns empty until the *whole run* completes (per-job logs too). To read a finished job's log fast, `gh run cancel` the run (preserves completed jobs' logs), then read — or wait for completion.
