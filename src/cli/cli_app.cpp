@@ -300,6 +300,8 @@ static int process_video(const CliOptions& opts) {
         config.variant = VideoVariant::P720_1;
     } else if (opts.video_variant_str == "720p-2") {
         config.variant = VideoVariant::P720_2;
+    } else if (opts.video_variant_str == "720p-3") {
+        config.variant = VideoVariant::P720_3;
     } else if (opts.video_variant_str == "1080p") {
         config.variant = VideoVariant::P1080p;
     } else {
@@ -484,7 +486,7 @@ int run_cli(int argc, char* argv[]) {
     video_cmd->add_flag("--legacy", opts.legacy_profile,
                          "Use Veo legacy text profile");
     video_cmd->add_option("--variant", opts.video_variant_str,
-                           "Force geometry: 720p-1, 720p-2, 1080p");
+                            "Force geometry: 720p-1, 720p-2, 720p-3, 1080p");
     video_cmd->add_flag("-f,--force", opts.force, "Skip detection");
     video_cmd->add_option("--crf", opts.video_crf, "Encode CRF")
         ->check(CLI::Range(0, 51));

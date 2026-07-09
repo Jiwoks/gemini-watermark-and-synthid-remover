@@ -45,7 +45,12 @@ find_package(OpenCV REQUIRED)
 find_package(fmt REQUIRED)
 find_package(CLI11 REQUIRED)
 find_package(spdlog REQUIRED)
-find_package(FFTW3f REQUIRED)
+find_package(FFTW3f QUIET)
+if(NOT FFTW3f_FOUND)
+    find_package(PkgConfig REQUIRED)
+    pkg_check_modules(FFTW3f REQUIRED IMPORTED_TARGET fftw3f)
+    set(FFTW3f_LIBRARIES PkgConfig::FFTW3f)
+endif()
 find_package(FFMPEG REQUIRED)
 
 # Homebrew's fftw3 ships a variable-only CMake config (FFTW3f_LIBRARIES is the

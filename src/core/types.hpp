@@ -102,6 +102,7 @@ enum class VideoVariant {
     Auto,       // auto-detect from resolution
     P720_1,     // 720p standard (48x48, margin 72,72)
     P720_2,     // 720p compact (44x44, margin 29,40)
+    P720_3,     // 720p offset (48x48, margin 96,96)
     P1080p,     // 1080p (96x96, margin 192,192)
 };
 
@@ -130,6 +131,8 @@ inline WatermarkPosition get_video_watermark_geometry(
             return {72, 72, 48};
         case VideoVariant::P720_2:
             return {29, 40, 44};
+        case VideoVariant::P720_3:
+            return {96, 96, 48};
         case VideoVariant::P1080p:
             return {192, 192, 96};
         case VideoVariant::Auto:

@@ -104,7 +104,7 @@ wmr remove input_dir/ -o output_dir/ --recursive
 | `--preset` | video | Encode preset (default slow) |
 | `--codec` | video | Video codec (default libx264) |
 | `--legacy` | video | Use Veo legacy text profile |
-| `--variant` | video | Force geometry: 720p-1, 720p-2, 1080p |
+| `--variant` | video | Force geometry: 720p-1, 720p-2, 720p-3, 1080p |
 | `--scenes` | video | Split video into separate files at scene boundaries |
 | `--scene-threshold` | video | Scene cut sensitivity 0.0-1.0 (default 0.3) |
 | `-r, --recursive` | remove | Process directories recursively |

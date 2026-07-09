@@ -2,6 +2,8 @@
 #include "video/video_reader.hpp"
 #include "video/scene_detector.hpp"
 #include "core/watermark_engine.hpp"
+#include <opencv2/imgproc.hpp>
+
 
 #include <algorithm>
 #include <cmath>
@@ -60,19 +62,34 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     auto default_pos = geo.get_position(reader.width(), reader.height());
 
     // For Veo legacy, use reference alpha map (non-square: 68x30 or 99x43)
-    // For Gemini diamond, use V2 diamond alpha map (36x36 or 96x96)
+    // For Gemini diamond, use V2 diamond alpha map (36x36, 48x48, or 96x96)
+    cv::Mat video_alpha_holder;
     const cv::Mat* video_alpha = nullptr;
     if (config.profile == VideoProfile::VeoLegacy) {
         video_alpha = (geo.logo_size > 68)
                       ? &engine.get_veo_text_alpha_large()
                       : &engine.get_veo_text_alpha_small();
     } else {
-        video_alpha = (geo.logo_size > 48)
-                      ? &engine.get_v2_diamond_alpha_large()
-                      : &engine.get_v2_diamond_alpha_small();
+        if (geo.logo_size > 48) {
+            video_alpha = &engine.get_v2_diamond_alpha_large();
+        } else if (geo.logo_size > 36) {
+            video_alpha = &engine.get_v2_diamond_alpha_small();
+        } else {
+            video_alpha = &engine.get_v2_diamond_alpha_36();
+        }
     }
 
     if (video_alpha && !video_alpha->empty()) {
+        if (video_alpha->cols != geo.logo_size) {
+            int target_height = geo.logo_size;
+            if (config.profile == VideoProfile::VeoLegacy) {
+                target_height = static_cast<int>(std::round(
+                    static_cast<double>(geo.logo_size) * video_alpha->rows / video_alpha->cols));
+            }
+            int method = (geo.logo_size > video_alpha->cols) ? cv::INTER_LINEAR : cv::INTER_AREA;
+            cv::resize(*video_alpha, video_alpha_holder, cv::Size(geo.logo_size, target_height), 0, 0, method);
+            video_alpha = &video_alpha_holder;
+        }
         default_pos = {reader.width() - geo.margin_right - video_alpha->cols,
                        reader.height() - geo.margin_bottom - video_alpha->rows};
         result.region = cv::Rect(default_pos.x, default_pos.y, video_alpha->cols, video_alpha->rows);
@@ -320,15 +337,33 @@ VideoResult VideoProcessor::process(const std::string& input_path,
     auto wsize = geometry_to_size(geo);
 
     // Select alpha map based on profile and resolution
+    cv::Mat video_alpha_holder;
     const cv::Mat* video_alpha = nullptr;
     if (config.profile == VideoProfile::VeoLegacy) {
         video_alpha = (geo.logo_size > 68)
                       ? &engine.get_veo_text_alpha_large()
                       : &engine.get_veo_text_alpha_small();
     } else {
-        video_alpha = (geo.logo_size > 48)
-                      ? &engine.get_v2_diamond_alpha_large()
-                      : &engine.get_v2_diamond_alpha_small();
+        if (geo.logo_size > 48) {
+            video_alpha = &engine.get_v2_diamond_alpha_large();
+        } else if (geo.logo_size > 36) {
+            video_alpha = &engine.get_v2_diamond_alpha_small();
+        } else {
+            video_alpha = &engine.get_v2_diamond_alpha_36();
+        }
+    }
+
+    if (video_alpha && !video_alpha->empty()) {
+        if (video_alpha->cols != geo.logo_size) {
+            int target_height = geo.logo_size;
+            if (config.profile == VideoProfile::VeoLegacy) {
+                target_height = static_cast<int>(std::round(
+                    static_cast<double>(geo.logo_size) * video_alpha->rows / video_alpha->cols));
+            }
+            int method = (geo.logo_size > video_alpha->cols) ? cv::INTER_LINEAR : cv::INTER_AREA;
+            cv::resize(*video_alpha, video_alpha_holder, cv::Size(geo.logo_size, target_height), 0, 0, method);
+            video_alpha = &video_alpha_holder;
+        }
     }
 
     // Shot-level detection
