@@ -48,6 +48,7 @@ private:
         WatermarkSize size = WatermarkSize::Small;
         float confidence = 0.0f;
         cv::Rect region;
+        WatermarkPosition geo = {72, 72, 48};
     };
 
     ShotDetection detect_in_shot(class VideoReader& reader,
@@ -61,6 +62,12 @@ private:
         const VideoWatermarkConfig& config, int width, int height) const;
 
     WatermarkSize geometry_to_size(const WatermarkPosition& geo) const;
+
+    WatermarkPosition auto_detect_watermark_geometry(
+        class VideoReader& reader,
+        class WatermarkEngine& engine,
+        VideoProfile profile,
+        double& out_score);
 };
 
 } // namespace wmr

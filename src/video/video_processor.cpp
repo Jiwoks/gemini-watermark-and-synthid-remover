@@ -57,7 +57,21 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     }
 
     // Get video-specific geometry
-    auto geo = resolve_geometry(config, reader.width(), reader.height());
+    WatermarkPosition geo;
+    if (config.variant != VideoVariant::Auto) {
+        geo = resolve_geometry(config, reader.width(), reader.height());
+    } else {
+        double score = 0.0;
+        geo = auto_detect_watermark_geometry(reader, engine, config.profile, score);
+        if (score >= 0.35) {
+            spdlog::info("Auto-detected watermark geometry: margin={},{} size={} (score={:.2f})",
+                         geo.margin_right, geo.margin_bottom, geo.logo_size, score);
+        } else {
+            geo = resolve_geometry(config, reader.width(), reader.height());
+            spdlog::info("No watermark auto-detected (best score {:.2f}), using default geometry: margin={},{} size={}",
+                         score, geo.margin_right, geo.margin_bottom, geo.logo_size);
+        }
+    }
     auto wsize = geometry_to_size(geo);
     auto default_pos = geo.get_position(reader.width(), reader.height());
 
@@ -99,6 +113,7 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
 
     result.position = default_pos;
     result.size = wsize;
+    result.geo = geo;
 
     // Determine sample range: use range params if specified, otherwise default coverage
     const int64_t sample_start = (range_start >= 0) ? range_start : 0;
@@ -369,6 +384,34 @@ VideoResult VideoProcessor::process(const std::string& input_path,
     // Shot-level detection
     ShotDetection shot;
 
+    auto update_geo_and_alpha = [&]() {
+        geo = shot.geo;
+        wsize = geometry_to_size(geo);
+        if (config.profile == VideoProfile::VeoLegacy) {
+            video_alpha = (geo.logo_size > 68)
+                          ? &engine.get_veo_text_alpha_large()
+                          : &engine.get_veo_text_alpha_small();
+        } else {
+            if (geo.logo_size > 48) {
+                video_alpha = &engine.get_v2_diamond_alpha_large();
+            } else if (geo.logo_size > 36) {
+                video_alpha = &engine.get_v2_diamond_alpha_small();
+            } else {
+                video_alpha = &engine.get_v2_diamond_alpha_36();
+            }
+        }
+        if (video_alpha && !video_alpha->empty() && video_alpha->cols != geo.logo_size) {
+            int target_height = geo.logo_size;
+            if (config.profile == VideoProfile::VeoLegacy) {
+                target_height = static_cast<int>(std::round(
+                    static_cast<double>(geo.logo_size) * video_alpha->rows / video_alpha->cols));
+            }
+            int method = (geo.logo_size > video_alpha->cols) ? cv::INTER_LINEAR : cv::INTER_AREA;
+            cv::resize(*video_alpha, video_alpha_holder, cv::Size(geo.logo_size, target_height), 0, 0, method);
+            video_alpha = &video_alpha_holder;
+        }
+    };
+
     if (config.scenes) {
         // ---- Scene splitting: detect boundaries, split into separate files ----
 
@@ -403,6 +446,7 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                          shot.position.x, shot.position.y, geo.logo_size);
         } else {
             shot = detect_in_shot(reader, engine, config);
+            update_geo_and_alpha();
         }
 
         reader.seek(0);
@@ -534,6 +578,7 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                          shot.position.x, shot.position.y, geo.logo_size);
         } else {
             shot = detect_in_shot(reader, engine, config);
+            update_geo_and_alpha();
             reader.seek(0);
         }
 
@@ -656,6 +701,119 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                  result.detection_confidence, result.elapsed_seconds);
 
     return result;
+}
+
+WatermarkPosition VideoProcessor::auto_detect_watermark_geometry(
+    VideoReader& reader,
+    WatermarkEngine& engine,
+    VideoProfile profile,
+    double& out_score)
+{
+    // Default fallback geometry
+    WatermarkPosition best_geo = {72, 72, 48};
+    double best_score = -1.0;
+    
+    // Sample 5 frames from the video to run the detection (e.g. at 10%, 20%, 30%, 40%, 50% of the video)
+    const int64_t total_frames = reader.frame_count();
+    std::vector<int64_t> sample_indices;
+    if (total_frames > 10) {
+        for (int i = 1; i <= 5; ++i) {
+            sample_indices.push_back((total_frames * i) / 10);
+        }
+    } else {
+        sample_indices.push_back(0);
+    }
+    
+    // Get the base templates
+    cv::Mat base_template;
+    double base_aspect = 1.0;
+    int min_size = 30;
+    int max_size = 96;
+    
+    if (profile == VideoProfile::VeoLegacy) {
+        base_template = engine.get_veo_text_alpha_small(); // 68x30
+        if (!base_template.empty()) {
+            base_aspect = static_cast<double>(base_template.rows) / base_template.cols;
+        }
+        min_size = 40;
+        max_size = 120;
+    } else {
+        base_template = engine.get_v2_diamond_alpha_small(); // 48x48
+        base_aspect = 1.0;
+        min_size = 30;
+        max_size = 96;
+    }
+    
+    if (base_template.empty()) {
+        out_score = 0.0;
+        return best_geo;
+    }
+    
+    // Search area size in bottom-right corner
+    const int search_area_w = 250;
+    const int search_area_h = 250;
+    
+    for (int64_t frame_idx : sample_indices) {
+        if (!reader.seek(frame_idx)) continue;
+        cv::Mat frame;
+        if (!reader.next_frame(frame) || frame.empty()) continue;
+        
+        // Define search region in the bottom-right corner of the frame
+        int x_start = std::max(0, frame.cols - search_area_w);
+        int y_start = std::max(0, frame.rows - search_area_h);
+        cv::Rect search_roi(x_start, y_start, frame.cols - x_start, frame.rows - y_start);
+        
+        cv::Mat region = frame(search_roi);
+        cv::Mat gray_region;
+        if (region.channels() >= 3) {
+            cv::cvtColor(region, gray_region, cv::COLOR_BGR2GRAY);
+        } else {
+            gray_region = region.clone();
+        }
+        cv::Mat gray_f;
+        gray_region.convertTo(gray_f, CV_32F, 1.0 / 255.0);
+        
+        // Loop over template sizes
+        for (int size = min_size; size <= max_size; size += 2) {
+            int t_w = size;
+            int t_h = (profile == VideoProfile::VeoLegacy) 
+                      ? static_cast<int>(std::round(size * base_aspect))
+                      : size;
+                      
+            if (t_w > gray_f.cols || t_h > gray_f.rows) continue;
+            
+            // Resize the template to target dimensions
+            cv::Mat resized_template;
+            int method = (t_w > base_template.cols) ? cv::INTER_LINEAR : cv::INTER_AREA;
+            cv::resize(base_template, resized_template, cv::Size(t_w, t_h), 0, 0, method);
+            
+            // Run template matching
+            cv::Mat match;
+            cv::matchTemplate(gray_f, resized_template, match, cv::TM_CCOEFF_NORMED);
+            double score;
+            cv::Point match_loc;
+            cv::minMaxLoc(match, nullptr, &score, nullptr, &match_loc);
+            
+            if (score > best_score) {
+                best_score = score;
+                // Reconstruct absolute position on full frame
+                int abs_x = x_start + match_loc.x;
+                int abs_y = y_start + match_loc.y;
+                
+                best_geo.logo_size = size;
+                best_geo.margin_right = frame.cols - abs_x - t_w;
+                best_geo.margin_bottom = frame.rows - abs_y - t_h;
+            }
+        }
+        
+        // If we found a very strong match, we can stop early
+        if (best_score >= 0.65) {
+            break;
+        }
+    }
+    
+    out_score = best_score;
+    return best_geo;
 }
 
 } // namespace wmr
