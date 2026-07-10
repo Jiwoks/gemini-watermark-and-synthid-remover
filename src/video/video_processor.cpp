@@ -58,18 +58,23 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
 
     // Get video-specific geometry
     WatermarkPosition geo;
+    double auto_geo_score = 0.0;
+    bool auto_geo_trusted = false;
     if (config.variant != VideoVariant::Auto) {
         geo = resolve_geometry(config, reader.width(), reader.height());
     } else {
-        double score = 0.0;
-        geo = auto_detect_watermark_geometry(reader, engine, config.profile, score);
-        if (score >= 0.35) {
+        geo = auto_detect_watermark_geometry(reader, engine, config.profile, auto_geo_score);
+        if (auto_geo_score >= 0.35) {
             spdlog::info("Auto-detected watermark geometry: margin={},{} size={} (score={:.2f})",
-                         geo.margin_right, geo.margin_bottom, geo.logo_size, score);
+                         geo.margin_right, geo.margin_bottom, geo.logo_size, auto_geo_score);
+            // Strong match: skip per-frame validation entirely — the geometry is already confirmed.
+            if (auto_geo_score >= 0.50) {
+                auto_geo_trusted = true;
+            }
         } else {
             geo = resolve_geometry(config, reader.width(), reader.height());
             spdlog::info("No watermark auto-detected (best score {:.2f}), using default geometry: margin={},{} size={}",
-                         score, geo.margin_right, geo.margin_bottom, geo.logo_size);
+                         auto_geo_score, geo.margin_right, geo.margin_bottom, geo.logo_size);
         }
     }
     auto wsize = geometry_to_size(geo);
@@ -114,6 +119,18 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     result.position = default_pos;
     result.size = wsize;
     result.geo = geo;
+
+    // If the geometry was auto-detected with high confidence, trust it directly
+    // and skip the expensive per-frame NCC sampling. The template-matching score
+    // already confirmed the watermark position (score >= 0.50).
+    if (auto_geo_trusted) {
+        result.found = true;
+        result.confidence = static_cast<float>(auto_geo_score);
+        spdlog::info("Auto-geometry trusted (score={:.2f}): skipping per-frame validation, "
+                     "processing all frames at margin={},{} size={}",
+                     auto_geo_score, geo.margin_right, geo.margin_bottom, geo.logo_size);
+        return result;
+    }
 
     // Determine sample range: use range params if specified, otherwise default coverage
     const int64_t sample_start = (range_start >= 0) ? range_start : 0;
@@ -516,6 +533,13 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                     det.region = shot.region;
                     det.size = shot.size;
                     engine.remove_watermark_alpha_only(frame, det, video_alpha);
+                    if (config.inpaint_strength > 0.0f) {
+                        InpaintConfig icfg;
+                        icfg.strength = 1.0f;
+                        icfg.method = InpaintMethod::Telea;
+                        icfg.full_mask = true;
+                        engine.inpaint_residual(frame, det.region, icfg, video_alpha);
+                    }
                 } else {
                     DetectionResult det;
                     det.detected = true;
@@ -536,6 +560,13 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                     }
 
                     engine.remove_watermark_alpha_only(frame, det, video_alpha);
+                    if (config.inpaint_strength > 0.0f) {
+                        InpaintConfig icfg;
+                        icfg.strength = 1.0f;
+                        icfg.method = InpaintMethod::Telea;
+                        icfg.full_mask = true;
+                        engine.inpaint_residual(frame, det.region, icfg, video_alpha);
+                    }
                 }
 
                 writer.write_frame(frame);
@@ -626,6 +657,13 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                 det.region = shot.region;
                 det.size = shot.size;
                 engine.remove_watermark_alpha_only(frame, det, video_alpha);
+                if (config.inpaint_strength > 0.0f) {
+                    InpaintConfig icfg;
+                    icfg.strength = 1.0f;
+                    icfg.method = InpaintMethod::Telea;
+                    icfg.full_mask = true;
+                    engine.inpaint_residual(frame, det.region, icfg, video_alpha);
+                }
                 writer.write_frame(frame);
                 ++result.frames_processed;
             } else {
@@ -653,6 +691,13 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                 }
 
                 engine.remove_watermark_alpha_only(frame, det, video_alpha);
+                if (config.inpaint_strength > 0.0f) {
+                    InpaintConfig icfg;
+                    icfg.strength = 1.0f;
+                    icfg.method = InpaintMethod::Telea;
+                    icfg.full_mask = true;
+                    engine.inpaint_residual(frame, det.region, icfg, video_alpha);
+                }
                 writer.write_frame(frame);
                 ++result.frames_processed;
             }
@@ -727,21 +772,18 @@ WatermarkPosition VideoProcessor::auto_detect_watermark_geometry(
     // Get the base templates
     cv::Mat base_template;
     double base_aspect = 1.0;
-    int min_size = 30;
-    int max_size = 96;
+    std::vector<int> search_sizes;
     
     if (profile == VideoProfile::VeoLegacy) {
         base_template = engine.get_veo_text_alpha_small(); // 68x30
         if (!base_template.empty()) {
             base_aspect = static_cast<double>(base_template.rows) / base_template.cols;
         }
-        min_size = 40;
-        max_size = 120;
+        search_sizes = {68, 99};
     } else {
         base_template = engine.get_v2_diamond_alpha_small(); // 48x48
         base_aspect = 1.0;
-        min_size = 30;
-        max_size = 96;
+        search_sizes = {36, 44, 48, 72, 96};
     }
     
     if (base_template.empty()) {
@@ -774,7 +816,7 @@ WatermarkPosition VideoProcessor::auto_detect_watermark_geometry(
         gray_region.convertTo(gray_f, CV_32F, 1.0 / 255.0);
         
         // Loop over template sizes
-        for (int size = min_size; size <= max_size; size += 2) {
+        for (int size : search_sizes) {
             int t_w = size;
             int t_h = (profile == VideoProfile::VeoLegacy) 
                       ? static_cast<int>(std::round(size * base_aspect))
@@ -810,6 +852,43 @@ WatermarkPosition VideoProcessor::auto_detect_watermark_geometry(
         if (best_score >= 0.65) {
             break;
         }
+    }
+    
+    if (best_score >= 0.35) {
+        // Find absolute position of the detected watermark
+        int base_w = best_geo.logo_size;
+        int base_h = (profile == VideoProfile::VeoLegacy)
+                     ? static_cast<int>(std::round(base_w * base_aspect))
+                     : base_w;
+        int abs_x = reader.width() - best_geo.margin_right - base_w;
+        int abs_y = reader.height() - best_geo.margin_bottom - base_h;
+        
+        // Snap the size to official templates
+        int snapped_size = base_w;
+        if (profile == VideoProfile::VeoLegacy) {
+            snapped_size = (base_w <= 83) ? 68 : 99;
+        } else {
+            if (base_w <= 40) {
+                snapped_size = 36;
+            } else if (base_w <= 46) {
+                snapped_size = 44;
+            } else if (base_w <= 60) {
+                snapped_size = 48;
+            } else if (base_w <= 84) {
+                snapped_size = 72;
+            } else {
+                snapped_size = 96;
+            }
+        }
+        
+        best_geo.logo_size = snapped_size;
+        int snapped_h = (profile == VideoProfile::VeoLegacy)
+                        ? static_cast<int>(std::round(snapped_size * base_aspect))
+                        : snapped_size;
+        
+        // Recompute margins to keep the top-left coordinate consistent
+        best_geo.margin_right = reader.width() - abs_x - snapped_size;
+        best_geo.margin_bottom = reader.height() - abs_y - snapped_h;
     }
     
     out_score = best_score;

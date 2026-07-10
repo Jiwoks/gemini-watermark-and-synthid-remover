@@ -2,6 +2,7 @@
 
 #include <opencv2/imgproc.hpp>
 #include <opencv2/photo.hpp>
+#include <opencv2/imgcodecs.hpp>
 #include <spdlog/spdlog.h>
 #include <algorithm>
 
@@ -118,7 +119,7 @@ void inpaint_residual(
             alpha_mask.convertTo(sparse_mask, CV_8U);
 
             // Dilate to cover compression spread
-            cv::Mat dk = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(5, 5));
+            cv::Mat dk = cv::getStructuringElement(cv::MORPH_ELLIPSE, cv::Size(15, 15));
             cv::dilate(sparse_mask, sparse_mask, dk);
         } else {
             // Edge mode: only inpaint at gradient edges
@@ -130,7 +131,7 @@ void inpaint_residual(
             cv::threshold(grad_u8, sparse_mask, 20, 255, cv::THRESH_BINARY);
 
             cv::Mat dilate_kernel = cv::getStructuringElement(
-                cv::MORPH_ELLIPSE, cv::Size(5, 5));
+                cv::MORPH_ELLIPSE, cv::Size(15, 15));
             cv::dilate(sparse_mask, sparse_mask, dilate_kernel);
         }
 
@@ -151,19 +152,16 @@ void inpaint_residual(
         cv::Mat inpainted;
         cv::inpaint(padded_area, mask, inpainted, config.radius, cv_method);
 
-        // Blend at masked pixels only
+        // Blend at masked pixels only across the entire padded coordinate system
         cv::Mat dst = image(padded);
-        cv::Mat src_inner = dst(inner);
-        cv::Mat inp_inner = inpainted(inner);
-        cv::Mat mask_inner = mask(inner);
-
+ 
         if (strength >= 0.999f) {
-            inp_inner.copyTo(src_inner, mask_inner);
+            inpainted.copyTo(dst, mask);
         } else {
             cv::Mat blended;
-            cv::addWeighted(src_inner, 1.0 - strength,
-                            inp_inner, strength, 0.0, blended);
-            blended.copyTo(src_inner, mask_inner);
+            cv::addWeighted(dst, 1.0 - strength,
+                            inpainted, strength, 0.0, blended);
+            blended.copyTo(dst, mask);
         }
 
         const char* name = (config.method == InpaintMethod::Telea)
