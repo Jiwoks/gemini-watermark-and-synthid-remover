@@ -304,6 +304,23 @@ void WatermarkEngine::inpaint_residual(
         (region.width <= 48 && region.height <= 48)
             ? WatermarkSize::Small : WatermarkSize::Large);
 
+#ifdef WMR_AI_DENOISE
+    if (config.method == InpaintMethod::AiDenoise) {
+        NcnnDenoiser& d = const_cast<WatermarkEngine*>(this)->denoiser();
+        if (!d.is_ready()) d.initialize();
+        if (d.is_ready()) {
+            d.denoise(image, region, alpha_map,
+                      config.sigma, config.strength, config.padding);
+            return;
+        }
+        spdlog::warn("AI denoise unavailable - falling back to Gaussian");
+        InpaintConfig fallback = config;
+        fallback.method = InpaintMethod::Gaussian;
+        wmr::inpaint_residual(image, region, alpha_map, fallback);
+        return;
+    }
+#endif
+
     wmr::inpaint_residual(image, region, alpha_map, config);
 }
 

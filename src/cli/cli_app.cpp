@@ -309,9 +309,25 @@ static int process_video(const CliOptions& opts) {
     }
 
     config.force = opts.force;
-    config.inpaint_strength = opts.inpaint_strength;
     config.scenes = opts.scenes;
     config.scene_threshold = opts.scene_threshold;
+
+    InpaintConfig icfg;
+    if (resolve_inpaint_config(opts, icfg)) {
+        config.inpaint_method = icfg.method;
+        config.denoise_sigma = icfg.sigma;
+        config.inpaint_strength = icfg.strength;
+        config.denoise_padding = icfg.padding;
+        config.denoise_radius = icfg.radius;
+ 
+        // If --inpaint-strength was explicitly specified on the command line
+        // (i.e. different from its default of 0.85), override the resolved strength.
+        if (opts.inpaint_strength != 0.85f) {
+            config.inpaint_strength = opts.inpaint_strength;
+        }
+    } else {
+        config.inpaint_strength = 0.0f;
+    }
 
     EncodeOptions encode;
     encode.codec = opts.video_codec;
@@ -498,8 +514,21 @@ int run_cli(int argc, char* argv[]) {
                            "Scene cut sensitivity 0.0-1.0 (default: 0.3)")
         ->check(CLI::Range(0.0, 1.0));
     video_cmd->add_option("--inpaint-strength", opts.inpaint_strength,
-                           "Inpaint strength 0.0-1.0")
+                           "Inpaint strength 0.0-1.0 (default 0.85)")
         ->check(CLI::Range(0.0f, 1.0f));
+    video_cmd->add_option("--denoise", opts.denoise_method,
+                           "Denoise method (ai = FDnCNN AI denoise, telea = Telea, ns = NavierStokes, soft = Gaussian, off = skip)")
+        ->default_str(opts.denoise_method);
+    video_cmd->add_option("--sigma", opts.denoise_sigma,
+                           "AI denoise noise level 1-150 (default 50)")
+        ->default_str("50");
+    video_cmd->add_option("--strength", opts.denoise_strength_pct,
+                           "Denoise / Inpaint strength % (0-300, default 120)")
+        ->default_str("120")
+        ->check(CLI::Range(0, 300));
+    video_cmd->add_option("--radius", opts.denoise_radius,
+                           "Inpaint radius (default 10)")
+        ->default_str("10");
     add_common(video_cmd);
 
     // Default subcommand: if no subcommand given, treat as positional for backward compat

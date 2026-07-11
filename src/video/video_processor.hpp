@@ -6,6 +6,7 @@
 #include <opencv2/core.hpp>
 
 #include "core/types.hpp"
+#include "core/inpaint.hpp"
 #include "video/video_writer.hpp"
 
 namespace wmr {
@@ -17,6 +18,10 @@ struct VideoWatermarkConfig {
     float inpaint_strength = 0.85f;
     bool scenes = false;
     double scene_threshold = 0.4;
+    InpaintMethod inpaint_method = InpaintMethod::Telea;
+    float denoise_sigma = 50.0f;
+    int denoise_padding = 32;
+    int denoise_radius = 10;
 };
 
 struct VideoResult {

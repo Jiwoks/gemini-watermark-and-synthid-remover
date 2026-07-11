@@ -338,6 +338,18 @@ VideoProcessor::ShotDetection VideoProcessor::detect_in_shot(
     return result;
 }
 
+static void apply_inpaint(const WatermarkEngine& engine, cv::Mat& frame, const cv::Rect& region, const VideoWatermarkConfig& config, const cv::Mat* custom_alpha) {
+    if (config.inpaint_strength <= 0.0f) return;
+    InpaintConfig icfg;
+    icfg.strength = config.inpaint_strength;
+    icfg.method = config.inpaint_method;
+    icfg.sigma = config.denoise_sigma;
+    icfg.padding = config.denoise_padding;
+    icfg.radius = config.denoise_radius;
+    icfg.full_mask = (config.inpaint_method != InpaintMethod::AiDenoise);
+    engine.inpaint_residual(frame, region, icfg, custom_alpha);
+}
+
 // ---------------------------------------------------------------------------
 // Main processing loop
 // ---------------------------------------------------------------------------
@@ -533,20 +545,14 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                     det.region = shot.region;
                     det.size = shot.size;
                     engine.remove_watermark_alpha_only(frame, det, video_alpha);
-                    if (config.inpaint_strength > 0.0f) {
-                        InpaintConfig icfg;
-                        icfg.strength = 1.0f;
-                        icfg.method = InpaintMethod::Telea;
-                        icfg.full_mask = true;
-                        engine.inpaint_residual(frame, det.region, icfg, video_alpha);
-                    }
+                    apply_inpaint(engine, frame, det.region, config, video_alpha);
                 } else {
                     DetectionResult det;
                     det.detected = true;
                     det.confidence = shot.confidence;
                     det.region = shot.region;
                     det.size = shot.size;
-
+ 
                     auto detection = engine.detect_watermark(frame, wsize, geo, video_alpha);
                     if (detection.detected &&
                         detection.confidence >= kOcclusionGateNcc) {
@@ -558,15 +564,9 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                             det.size = detection.size;
                         }
                     }
-
+ 
                     engine.remove_watermark_alpha_only(frame, det, video_alpha);
-                    if (config.inpaint_strength > 0.0f) {
-                        InpaintConfig icfg;
-                        icfg.strength = 1.0f;
-                        icfg.method = InpaintMethod::Telea;
-                        icfg.full_mask = true;
-                        engine.inpaint_residual(frame, det.region, icfg, video_alpha);
-                    }
+                    apply_inpaint(engine, frame, det.region, config, video_alpha);
                 }
 
                 writer.write_frame(frame);
@@ -657,13 +657,7 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                 det.region = shot.region;
                 det.size = shot.size;
                 engine.remove_watermark_alpha_only(frame, det, video_alpha);
-                if (config.inpaint_strength > 0.0f) {
-                    InpaintConfig icfg;
-                    icfg.strength = 1.0f;
-                    icfg.method = InpaintMethod::Telea;
-                    icfg.full_mask = true;
-                    engine.inpaint_residual(frame, det.region, icfg, video_alpha);
-                }
+                apply_inpaint(engine, frame, det.region, config, video_alpha);
                 writer.write_frame(frame);
                 ++result.frames_processed;
             } else {
@@ -691,13 +685,7 @@ VideoResult VideoProcessor::process(const std::string& input_path,
                 }
 
                 engine.remove_watermark_alpha_only(frame, det, video_alpha);
-                if (config.inpaint_strength > 0.0f) {
-                    InpaintConfig icfg;
-                    icfg.strength = 1.0f;
-                    icfg.method = InpaintMethod::Telea;
-                    icfg.full_mask = true;
-                    engine.inpaint_residual(frame, det.region, icfg, video_alpha);
-                }
+                apply_inpaint(engine, frame, det.region, config, video_alpha);
                 writer.write_frame(frame);
                 ++result.frames_processed;
             }

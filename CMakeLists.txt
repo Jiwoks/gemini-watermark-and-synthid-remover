@@ -154,7 +154,23 @@ if(WMR_BUILD_AI_DENOISE)
     endif()
 
     # volk provides the Vulkan loader bindings used by the ncnn_shim.
-    find_package(volk CONFIG REQUIRED)
+    find_package(volk CONFIG QUIET)
+    if(NOT TARGET volk AND NOT TARGET volk::volk)
+        message(STATUS "volk package not found on system. Fetching Vulkan-Headers and volk from GitHub...")
+        include(FetchContent)
+        FetchContent_Declare(
+            vulkan_headers
+            GIT_REPOSITORY https://github.com/KhronosGroup/Vulkan-Headers.git
+            GIT_TAG        main
+        )
+        FetchContent_MakeAvailable(vulkan_headers)
+        FetchContent_Declare(
+            volk
+            GIT_REPOSITORY https://github.com/zeux/volk.git
+            GIT_TAG        master
+        )
+        FetchContent_MakeAvailable(volk)
+    endif()
 
     # Diagnostic-only: surfaces where CMake's FindVulkan resolved the loader.
     find_package(Vulkan QUIET)
